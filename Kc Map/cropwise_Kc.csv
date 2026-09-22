@@ -1,0 +1,11 @@
+Class,Season,Crop_type,Sowing_date,Max_area_(m^2),Growth_period_(days),Initial_stage_(days),Dev_stage_(days),Mid_stage_(days),Late_stage_(days),Kc_ini,Kc_mid,Kc_end
+2,Kharif,Finger millet,01-06,12246.0,124,18,28,48,30,0.3,1.0,0.3
+2,Kharif,Maize,01-06,5928.74,157,25,42,50,40,0.3,1.2,0.475
+3,Perennial,Grapes,01-01,440.78,205,25,50,80,50,0.3,0.85,0.45
+3,Perennial,Mulberry,01-01,1021.58,155,25,40,80,10,0.3,1.05,0.85
+3,Perennial,Pomegranate,01-01,375.53,240,25,60,110,45,0.6,0.95,0.75
+4,Rabi,Avarekalu,01-09,483.15,104,18,28,38,20,0.4,1.15,0.35
+4,Rabi,Horse gram,01-09,729.18,159,22,32,65,40,0.4,1.1,0.3
+5,Rabi,Onion,01-10,882.06,180,18,30,90,42,0.7,1.05,0.75
+5,Rabi,Potato,01-09,786.53,142,35,32,50,25,0.5,1.15,0.75
+6,Summer,Tomato,01-01,1605.55,157,32,42,55,28,0.7,1.15,0.8

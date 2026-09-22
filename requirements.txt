@@ -1,0 +1,7 @@
+matplotlib
+numpy
+pandas
+netCDF4
+rasterio
+fiona
+tqdm

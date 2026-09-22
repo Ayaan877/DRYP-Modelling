@@ -1,0 +1,11 @@
+Class,Season,Crop type,Source Proxy,Rooting Depth min (m),Rooting Depth max (m)
+2,Kharif,Finger millet,Millet,1,2
+2,Kharif,Maize,Maize (grain),1,1.7
+3,Perennial,Grapes,Grapes (table/raisin),1,2
+3,Perennial,Mulberry,Hops,1,1.2
+3,Perennial,Pomegranate,Deciduous Orchard,1,2
+4,Rabi,Avarekalu,Beans (dry),0.6,0.9
+4,Rabi,Horse gram,Lentils,0.6,0.8
+5,Rabi,Onion,Onion (dry),0.3,0.6
+5,Rabi,Potato,Potato,0.4,0.6
+6,Summer,Tomato,Tomato,0.7,1.5
