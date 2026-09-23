@@ -1,13 +1,15 @@
 import matplotlib.pyplot as plt
 import pandas as pd
+from pathlib import Path
 from matplotlib.patches import Patch
 
 # Configuration
-VERSION = "v2.0"
+VERSION = "v3.0"
 TIME_ORIGIN = "2015-01-01"
-crop_curves = pd.read_csv(f"cropwise_Kc_curves_{VERSION}.csv")
-class_curves = pd.read_csv(f"classwise_Kc_curves_{VERSION}.csv")
-crop_metadata = pd.read_csv(f"cropwise_Kc.csv")
+SCRIPT_DIR = Path(__file__).resolve().parent
+crop_curves = pd.read_csv(SCRIPT_DIR / f"cropwise_Kc_curves_{VERSION}.csv")
+class_curves = pd.read_csv(SCRIPT_DIR / f"classwise_Kc_curves_{VERSION}.csv")
+crop_metadata = pd.read_csv(SCRIPT_DIR / f"cropwise_Kc.csv")
 
 crop_classes = crop_metadata.set_index("Crop_type")["Class"]
 colors = ["C1", "C4", "C2", "C5", "C3", "C0"]

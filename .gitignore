@@ -5,7 +5,7 @@
 !*/
 !**/*.py
 
-# Keep tabular inputs
+# Keep inputs data
 !Kc Map/cropwise_Kc.csv
 !Kc Map/Kc_FAO56.csv
 !Rooting Depth/Rooting Depth FAO56.csv
@@ -18,8 +18,9 @@
 !Rooting Depth/CropMap_Rabi_2024-25_new.tif
 !Well Depth Map/*.asc
 !*.md
+!*.asc
 
-# Generated GIS, scientific-data, and visualization products.
+# Ignore output files and temporary files
 .venv/
 *.nc
 *.tif.aux.xml
