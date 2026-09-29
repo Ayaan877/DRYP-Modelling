@@ -3,5 +3,6 @@ numpy
 pandas
 netCDF4
 rasterio
+pyproj
 fiona
 tqdm

@@ -9,7 +9,7 @@ from rasterio.features import geometry_mask
 # Configuration
 # -----------------------------------------------------------------------
 
-VERSION = "v2.0"
+VERSION = "v3.0"
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CSV = SCRIPT_DIR / "Rooting Depth FAO56.csv"
 DEFAULT_KHARIF = SCRIPT_DIR / "CropMap_Kharif_2024-25_new.tif"
@@ -17,6 +17,7 @@ DEFAULT_RABI = SCRIPT_DIR / "CropMap_Rabi_2024-25_new.tif"
 DEFAULT_WATERSHED = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
 DEFAULT_OUTPUT = SCRIPT_DIR / f"Rooting_Depth_{VERSION}_10m.asc"
 NODATA_VALUE = -99999
+FALLOW_ROOTING_DEPTH = 100
 
 
 # -----------------------------------------------------------------------
@@ -25,24 +26,23 @@ NODATA_VALUE = -99999
 
 def read_depth_lookup(csv_path: Path) -> dict[int, float]:
 	data = pd.read_csv(csv_path)
-	required_columns = {"Class", "Rooting Depth max (m)"}
+	depth_column = "Rooting Depth max (mm)"
+	required_columns = {"Class", depth_column}
 	missing_columns = required_columns.difference(data.columns)
 	if missing_columns:
-		raise ValueError(
-			f"{csv_path} is missing required columns: {sorted(missing_columns)}"
-		)
+		raise ValueError(f"{csv_path} is missing required columns: {sorted(missing_columns)}")
 
-	data = data.dropna(subset=["Class", "Rooting Depth max (m)"])
+	data = data.dropna(subset=["Class", depth_column])
 	data["Class"] = pd.to_numeric(data["Class"], errors="raise").astype(int)
-	data["Rooting Depth max (m)"] = pd.to_numeric(
-		data["Rooting Depth max (m)"], errors="raise"
+	data[depth_column] = pd.to_numeric(
+		data[depth_column], errors="raise"
 	)
 	if (data["Class"] < 0).any():
 		raise ValueError("CSV class values must be non-negative")
-	if (data["Rooting Depth max (m)"] < 0).any():
+	if (data[depth_column] < 0).any():
 		raise ValueError("Rooting depths must be non-negative")
 
-	grouped_depths = data.groupby("Class")["Rooting Depth max (m)"].max()
+	grouped_depths = data.groupby("Class")[depth_column].max()
 	lookup: dict[int, float] = {}
 	for class_value, depth in grouped_depths.items():
 		if not isinstance(class_value, (int, np.integer)):
@@ -100,7 +100,7 @@ def class_depth_grid(crop_map, depth_lookup: dict[int, float], map_name: str):
 		)
 
 	lookup_size = max(depth_lookup, default=0) + 1
-	lookup = np.zeros(lookup_size, dtype=np.float32)
+	lookup = np.full(lookup_size, FALLOW_ROOTING_DEPTH, dtype=np.float32)
 	for class_value, depth in depth_lookup.items():
 		lookup[class_value] = depth
 
@@ -157,7 +157,7 @@ def make_rooting_depth_map(
 
 	print(f"Wrote {output_path}")
 	print(f"Grid: {rooting_depth.shape[1]} columns x {rooting_depth.shape[0]} rows")
-	print(f"Rooting depth range: {rooting_depth.min():g} to {rooting_depth.max():g} m")
+	print(f"Rooting depth range: {rooting_depth.min():g} to {rooting_depth.max():g} mm")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from rasterio.warp import reproject
 # Configuration
 # -----------------------------------------------------------------------
 
-VERSION = "v2.0"
+VERSION = "v3.0"
 SCRIPT_DIR = Path(__file__).resolve().parent
 INPUT_FILE = SCRIPT_DIR / f"Rooting_Depth_{VERSION}_10m.asc"
 OUTPUT_FILE = SCRIPT_DIR / f"Rooting_Depth_{VERSION}_250m.asc"
@@ -74,8 +74,7 @@ def downscale_rooting_depth(input_file, output_file):
 			depth.filled(source_nodata),
 			source.transform,
 			source_crs,
-			source_nodata,
-		)
+			source_nodata)
 	write_ascii_grid(output_file, target)
 	print(f"Wrote {output_file}: {TARGET_NROWS} x {TARGET_NCOLS}")
 

@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-KC_VERSION = "v3.0"
+KC_VERSION = "v4.0"
 INPUT_FILE = SCRIPT_DIR / f"Kc_spatiotemporal_{KC_VERSION}_10m.nc"
 OUTPUT_FILE = SCRIPT_DIR / f"Kc_spatiotemporal_{KC_VERSION}_250m.nc"
 

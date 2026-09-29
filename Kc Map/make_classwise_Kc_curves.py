@@ -8,7 +8,7 @@ from make_cropwise_Kc_curves import get_dataset_dates, TIME_ORIGIN, DATASET_YEAR
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 METADATA_FILE = SCRIPT_DIR / "cropwise_Kc.csv"
-VERSION = "v3.0"
+VERSION = "v4.0"
 INPUT_FILE = SCRIPT_DIR / f"cropwise_Kc_curves_{VERSION}.csv"
 OUTPUT_FILE = SCRIPT_DIR / f"classwise_Kc_curves_{VERSION}.csv"
 

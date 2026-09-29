@@ -7,7 +7,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 INPUT_FILE = SCRIPT_DIR / "cropwise_Kc.csv"
-VERSION = "v3.0"
+VERSION = "v4.0"
 OUTPUT_FILE = SCRIPT_DIR / f"cropwise_Kc_curves_{VERSION}.csv"
 TIME_ORIGIN = "2015-01-01"
 DATASET_YEARS = 10
