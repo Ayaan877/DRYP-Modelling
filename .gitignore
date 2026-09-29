@@ -1,31 +1,9 @@
-# Keep only source scripts, reproducible inputs, and project metadata.
+# Keep only scripts and gitignore
 *
 !.gitignore
 !requirements.txt
 !*/
 !**/*.py
-
-# Keep inputs data
-!Kc Map/cropwise_Kc.csv
-!Kc Map/Kc_FAO56.csv
-!Rooting Depth/Rooting Depth FAO56.csv
-!Well Depth Map/*.csv
-!**/Updated Watershed/**/*
-!**/Crop Maps/**/*
-!Kc Map/CropMap_Kharif_2024-25_new.tif
-!Kc Map/CropMap_Rabi_2024-25_new.tif
-!Rooting Depth/CropMap_Kharif_2024-25_new.tif
-!Rooting Depth/CropMap_Rabi_2024-25_new.tif
-!Well Depth Map/*.asc
 !*.md
 !*.asc
-
-# Ignore output files and temporary files
 .venv/
-*.nc
-*.tif.aux.xml
-*.qgz
-*.qml
-*.clr
-*.png
-*.mp4
