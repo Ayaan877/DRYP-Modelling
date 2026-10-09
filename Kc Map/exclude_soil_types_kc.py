@@ -90,13 +90,27 @@ def read_soil_exclusion_mask(soil_texture_file, target_transform, target_crs, ta
 			raise ValueError("The soil texture raster has no CRS information")
 
 		soil_texture = soil_source.read(1)
+		nodata_source = (
+			soil_texture == SOIL_TEXTURE_CODES["No Data"]
+		).astype(np.float32)
 		excluded_source = np.isin(
 			soil_texture,
-			list(EXCLUDED_SOIL_TEXTURES),
+			list(EXCLUDED_SOIL_TEXTURES - {SOIL_TEXTURE_CODES["No Data"]}),
 		).astype(np.float32)
 		soil_cell_source = np.ones(soil_texture.shape, dtype=np.float32)
+		nodata_count = np.zeros(target_shape, dtype=np.float32)
 		excluded_count = np.zeros(target_shape, dtype=np.float32)
 		soil_cell_count = np.zeros(target_shape, dtype=np.float32)
+		reproject(
+			source=nodata_source,
+			destination=nodata_count,
+			src_transform=soil_source.transform,
+			src_crs=soil_source.crs,
+			dst_transform=target_transform,
+			dst_crs=target_crs,
+			resampling=Resampling.sum,
+			dst_nodata=0,
+		)
 		reproject(
 			source=excluded_source,
 			destination=excluded_count,
@@ -118,9 +132,16 @@ def read_soil_exclusion_mask(soil_texture_file, target_transform, target_crs, ta
 			dst_nodata=0,
 		)
 
+	outside_boundary = (
+		(soil_cell_count == 0)
+		| np.isclose(nodata_count, soil_cell_count)
+	)
 	return (
-		(soil_cell_count > 0)
-		& (excluded_count > MAJORITY_THRESHOLD * soil_cell_count)
+		outside_boundary
+		| (
+			(soil_cell_count > 0)
+			& (excluded_count > MAJORITY_THRESHOLD * soil_cell_count)
+		)
 	)
 
 

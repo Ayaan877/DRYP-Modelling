@@ -95,12 +95,6 @@ def overlap_pair_counts(kharif, rabi, overlap):
 	return np.unique(pairs, axis=0, return_counts=True)
 
 
-def format_range(minimum, maximum):
-	if np.isclose(minimum, maximum):
-		return f"{minimum:.2f}"
-	return f"{minimum:.2f}-{maximum:.2f}"
-
-
 def calculate_effective_area():
 	"""Calculate annual min/max effective area for each class."""
 	calendar, curves, kharif, rabi, pixel_area = read_inputs()
@@ -184,7 +178,8 @@ def write_effective_area(area_by_class, class_masks, dates,
 				"growth_days": int(year_mask.sum()),
 				"min_area_m2": minimum,
 				"max_area_m2": maximum,
-				"area_range_m2": format_range(minimum, maximum),
+				"max_area_ha": maximum / 10_000,
+				"max_area_acres": maximum / 4046.8564224,
 			})
 
 	pd.DataFrame(rows).to_csv(output_file, index=False)
