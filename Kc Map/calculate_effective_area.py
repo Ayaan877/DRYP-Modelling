@@ -183,7 +183,7 @@ def write_effective_area(area_by_class, class_masks, dates,
 			})
 
 	pd.DataFrame(rows).to_csv(output_file, index=False)
-	print(f"Wrote {len(rows)} class/year records to {output_file}")
+	print(f"Wrote {len(rows)} class/year records to {output_file.name}")
 
 
 if __name__ == "__main__":

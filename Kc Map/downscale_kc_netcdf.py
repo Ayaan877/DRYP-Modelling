@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-KC_VERSION = "v4.0"
+KC_VERSION = "v3.0"
 INPUT_FILE = SCRIPT_DIR / f"Kc_spatiotemporal_{KC_VERSION}_10m.nc"
 OUTPUT_FILE = SCRIPT_DIR / f"Kc_spatiotemporal_{KC_VERSION}_250m.nc"
 
@@ -163,7 +163,7 @@ def downscale_kc_netcdf(input_file, output_file):
 				source_day[np.isnan(source_day)] = NODATA
 				kc_output[day_index, :, :] = regrid(source_day, source_transform, source_crs)
 
-	print(f"Wrote {output_file}: {time_count} x {TARGET_NROWS} x {TARGET_NCOLS}")
+	print(f"Wrote {output_file.name}: {time_count} x {TARGET_NROWS} x {TARGET_NCOLS}")
 
 
 if __name__ == "__main__":

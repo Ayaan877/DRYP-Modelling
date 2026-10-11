@@ -16,7 +16,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 KHARIF_RASTER = SCRIPT_DIR / "CropMap_Kharif_2024-25_new.tif"
 RABI_RASTER = SCRIPT_DIR / "CropMap_Rabi_2024-25_new.tif"
 WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
-VERSION = "v4.0"
+VERSION = "v3.0"
 KC_FILE = SCRIPT_DIR / f"classwise_Kc_curves_{VERSION}.csv"
 OUTPUT_FILE = SCRIPT_DIR / f"Kc_spatiotemporal_{VERSION}_10m.nc"
 
@@ -262,7 +262,7 @@ def run_spatiotemporal_kc():
 		width,
 		height)
 	
-	print(f"Wrote {OUTPUT_FILE}: {len(time)} x {height} x {width}")
+	print(f"Wrote {OUTPUT_FILE.name}: {len(time)} x {height} x {width}")
 
 
 if __name__ == "__main__":

@@ -142,7 +142,7 @@ def write_calendar():
 		METADATA_FILE,
 		CLASS_CURVES_FILE)
 	calendar_data.to_csv(OUTPUT_FILE, index=False)
-	print(f"Saved classwise Kc calendar to {OUTPUT_FILE}")
+	print(f"Saved classwise Kc calendar to {OUTPUT_FILE.name}")
 
 
 if __name__ == "__main__":

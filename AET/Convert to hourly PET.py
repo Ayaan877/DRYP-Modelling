@@ -18,6 +18,7 @@ Key improvements over the original sinusoidal method:
 import netCDF4 as nc
 import numpy as np
 from datetime import datetime, timedelta
+from pathlib import Path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -312,7 +313,7 @@ print(f"  Max error  : {max_err:.2e} mm  (should be < 1e-4)")
 print(f"  Mean error : {mean_err:.2e} mm")
 
 # ── Write output NetCDF ────────────────────────────────────────────────────
-print(f"\nWriting output to:\n  {OUTPUT_PATH}")
+print(f"\nWriting output to:\n  {Path(OUTPUT_PATH).name}")
 ds_out = nc.Dataset(OUTPUT_PATH, 'w', format='NETCDF4')
 
 ds_out.createDimension('time',      n_hours)
@@ -367,5 +368,4 @@ print(f"  Mass conservation  : max error = {max_err:.2e} mm")
 print(f"\nDay 1, cell[0,0] check:")
 print(f"  Daily original     : {float(pet_daily[0,0,0]):.4f} mm/day")
 print(f"  Sum of 24 hourly   : {pet_hourly[:24,0,0].sum():.4f} mm")
-print(f"\nDone! File saved to:\n  {OUTPUT_PATH}")
-
+print(f"\nDone! File saved to:\n  {Path(OUTPUT_PATH).name}")

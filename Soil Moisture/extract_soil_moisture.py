@@ -240,7 +240,7 @@ def extract_soil_moisture(
         OUTPUT_CRS,
         watershed_file=watershed_file,
     )
-    print(f"Wrote {len(time_indices)} time steps to {output_file}")
+    print(f"Wrote {len(time_indices)} time steps to {output_file.name}")
 
 
 def lon_variable_attrs(source):

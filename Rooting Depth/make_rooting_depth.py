@@ -155,7 +155,7 @@ def make_rooting_depth_map(
 		kharif_depth[watershed_mask], rabi_depth[watershed_mask])
 	write_ascii_grid(output_path, rooting_depth, profile)
 
-	print(f"Wrote {output_path}")
+	print(f"Wrote {output_path.name}")
 	print(f"Grid: {rooting_depth.shape[1]} columns x {rooting_depth.shape[0]} rows")
 	print(f"Rooting depth range: {rooting_depth.min():g} to {rooting_depth.max():g} mm")
 
@@ -168,4 +168,3 @@ if __name__ == "__main__":
 		DEFAULT_WATERSHED,
 		DEFAULT_OUTPUT,
 	)
-

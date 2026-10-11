@@ -224,4 +224,4 @@ def reproject_netcdf(
             projected[np.logical_not(watershed_mask)] = fill_value
             data_target[index, :, :] = projected
 
-    print(f"Wrote reprojected NetCDF: {output_file}")
+    print(f"Wrote reprojected NetCDF: {output_file.name}")

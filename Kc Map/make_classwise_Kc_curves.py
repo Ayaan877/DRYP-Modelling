@@ -8,7 +8,7 @@ from make_cropwise_Kc_curves import get_dataset_dates, TIME_ORIGIN, DATASET_YEAR
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 METADATA_FILE = SCRIPT_DIR / "cropwise_Kc.csv"
-VERSION = "v4.0"
+VERSION = "v3.0"
 INPUT_FILE = SCRIPT_DIR / f"cropwise_Kc_curves_{VERSION}.csv"
 OUTPUT_FILE = SCRIPT_DIR / f"classwise_Kc_curves_{VERSION}.csv"
 
@@ -89,7 +89,7 @@ def write_classwise_curves():
 
 	time_origin, dataset_end, dataset_days = get_dataset_dates(TIME_ORIGIN, DATASET_YEARS)
 
-	print(f"Saved classwise daily Kc records for {len(kc_class)} days to {OUTPUT_FILE}")
+	print(f"Saved classwise daily Kc records for {len(kc_class)} days to {OUTPUT_FILE.name}")
 	print(f"Period: {time_origin.date()} to {dataset_end.date()} ({DATASET_YEARS} years)")
 
 if __name__ == "__main__":

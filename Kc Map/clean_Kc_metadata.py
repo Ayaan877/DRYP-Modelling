@@ -92,7 +92,7 @@ def write_kc_metadata():
 		
 	cropwise_data.to_csv(OUTPUT_FILE, index=False, na_rep=OUTPUT_NA_REPRESENTATION)
 
-	print(f"Wrote {len(cropwise_data)} crops to {OUTPUT_FILE}")
+	print(f"Wrote {len(cropwise_data)} crops to {OUTPUT_FILE.name}")
 
 if __name__ == "__main__":
 	write_kc_metadata()

@@ -76,7 +76,7 @@ def downscale_rooting_depth(input_file, output_file):
 			source_crs,
 			source_nodata)
 	write_ascii_grid(output_file, target)
-	print(f"Wrote {output_file}: {TARGET_NROWS} x {TARGET_NCOLS}")
+	print(f"Wrote {output_file.name}: {TARGET_NROWS} x {TARGET_NCOLS}")
 
 
 if __name__ == "__main__":

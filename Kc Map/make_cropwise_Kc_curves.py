@@ -7,7 +7,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 INPUT_FILE = SCRIPT_DIR / "cropwise_Kc.csv"
-VERSION = "v4.0"
+VERSION = "v3.0"
 OUTPUT_FILE = SCRIPT_DIR / f"cropwise_Kc_curves_{VERSION}.csv"
 TIME_ORIGIN = "2015-01-01"
 DATASET_YEARS = 10
@@ -126,7 +126,7 @@ def write_cropwise_curves():
 	
 	curves.to_csv(OUTPUT_FILE, index=False)
 	
-	print(f"Saved cropwise daily Kc records for {len(curves)} days to {OUTPUT_FILE}")
+	print(f"Saved cropwise daily Kc records for {len(curves)} days to {OUTPUT_FILE.name}")
 	print(f"Period: {time_origin.date()} to {dataset_end.date()} ({DATASET_YEARS} years)")
 
 if __name__ == "__main__":

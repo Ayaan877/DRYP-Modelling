@@ -201,7 +201,7 @@ def mask_downscaled_kc(input_file, output_file, soil_texture_file):
 				daily_kc[soil_mask] = NODATA
 				kc_output[day_index, :, :] = daily_kc
 
-	print(f"Wrote {output_file}")
+	print(f"Wrote {output_file.name}")
 	print(f"Masked 250 m cells: {int(soil_mask.sum())}")
 
 
