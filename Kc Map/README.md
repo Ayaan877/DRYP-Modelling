@@ -34,9 +34,9 @@ Optional:
 ## Output Details
 - Name: `Kc_spatiotemporal_v3.1_250m.nc`
 - Format: netCDF (.nc)
-- Duration: Jan 2015 - Dec 2025 
+- Duration: 01-01-2015 00:00:00 to 31-12-2025 23:59:59
 - Time dim: 3653 (days since 01-01-2015 00:00:00) 
-- CRS: EPSG:32643 - WGS 84 / UTM zone 43N
+- CRS: EPSG:32643 - WGS 84/UTM zone 43N
 - Lat extent: 798778.8125 - 837778.8125
 - Lon extent: 1484563.25 - 1510813.25
 - Pixel size: 250 x 250 m

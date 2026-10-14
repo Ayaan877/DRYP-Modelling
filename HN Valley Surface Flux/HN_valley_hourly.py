@@ -14,6 +14,8 @@ TIME_END = "2025-12-31 23:00:00"
 EXCLUDED_TANK_NUMBER = 1
 DRY_MONTHS = (6, 7, 8, 9)
 ALLOCATION_FRAC = 0.5
+DISCHARGE_START = "2022-01-01 00:00:00"
+GRID_CELL_AREA_M2 = 250 * 250
 
 TANK_NUMBER_COLUMN = "Tank No."
 ALLOCATION_COLUMN = "Water Allocated (MLD)"
@@ -44,9 +46,20 @@ def make_hourly_inflow(allocation_file):
 		TIME_COLUMN: hours.strftime("%H:%M:%S"),
 	})
 
-	hourly_allocation = (allocation_mld * ALLOCATION_FRAC * 1000/24)
-	inflow[FLUX_COLUMN] = hourly_allocation
-	inflow.loc[hours.month.isin(DRY_MONTHS), FLUX_COLUMN] = 0
+	hourly_allocation_mm = (
+		allocation_mld
+		* ALLOCATION_FRAC
+		* 1000  # ML/day to m3/day
+		/ 24
+		/ GRID_CELL_AREA_M2
+		* 1000  # metres to millimetres
+	)
+	inflow[FLUX_COLUMN] = hourly_allocation_mm
+	inflow.loc[
+		(hours < pd.Timestamp(DISCHARGE_START))
+		| hours.month.isin(DRY_MONTHS),
+		FLUX_COLUMN,
+	] = 0
 
 	return inflow
 
@@ -61,7 +74,7 @@ def write_hourly_inflow():
 
 	print(f"Saved hourly HN Valley inflow records for {len(hn_inflow)} hours to {OUTPUT_FILE.name}")
 	print(f"Period: {TIME_ORIGIN} to {TIME_END}")
-
-
+	print(f"Nonzero flux value = {hn_inflow[FLUX_COLUMN].max()} mm/hr/cell")\
+	
 if __name__ == "__main__":
 	write_hourly_inflow()
