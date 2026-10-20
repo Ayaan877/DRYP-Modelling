@@ -8,6 +8,7 @@ from netCDF4 import Dataset, date2num, num2date
 from rasterio.transform import from_origin
 from rasterio.warp import transform_geom
 
+from downscale_netcdf import downscale_netcdf
 from reproject_netcdf import reproject_netcdf
 
 # -----------------------------------------------------------------------
@@ -17,14 +18,15 @@ from reproject_netcdf import reproject_netcdf
 SCRIPT_DIR = Path(__file__).resolve().parent
 INPUT_FILE = SCRIPT_DIR / "RF_predcited_RZSM_1981_2024.nc"
 WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / ("Updated_watershed.shp")
-OUTPUT_FILE = SCRIPT_DIR / "RZSM_2014-2024.nc"
+OUTPUT_FILE = SCRIPT_DIR / "RZSM_2014-2024_250m.nc"
 START_YEAR = 2014
 END_YEAR = 2024
 NETCDF_FORMAT = "NETCDF4"
 INPUT_CRS = "EPSG:4326"
 OUTPUT_CRS = "EPSG:32643"
-COMPRESSION_LEVEL = 4
-TIME_CHUNK_SIZE = 31
+SOURCE_GRID_SIZE = 5500
+NETCDF_COMPRESSION_LEVEL = 4
+NETCDF_CHUNK_SIZE = 31
 
 # -----------------------------------------------------------------------
 # Functions
@@ -78,9 +80,9 @@ def make_watershed_mask(geometries, source_crs, lon, lat, input_crs):
     return mask_descending_lat[::-1, :]
 
 
-def extract_soil_moisture(
-    input_file, watershed_file, output_file, start_year, end_year, input_crs
-):
+def write_soil_moisture(
+    input_file, watershed_file, output_file, start_year, end_year, input_crs):
+
     geometries, watershed_crs = read_watershed(watershed_file)
     requested_start = date(start_year, 1, 1)
     requested_end = date(end_year, 12, 31)
@@ -158,6 +160,7 @@ def extract_soil_moisture(
             input_crs=input_crs,
         )
 
+        print("Extracting watershed subset...")
         output_file.parent.mkdir(parents=True, exist_ok=True)
         source_data = source.variables["RZSM"]
         fill_value = getattr(source_data, "_FillValue", -9999.0)
@@ -184,10 +187,10 @@ def extract_soil_moisture(
                 source_data.dtype,
                 ("time", "lat", "lon"),
                 zlib=True,
-                complevel=COMPRESSION_LEVEL,
+                complevel=NETCDF_COMPRESSION_LEVEL,
                 fill_value=fill_value,
                 chunksizes=(
-                    min(TIME_CHUNK_SIZE, len(time_indices)),
+                    min(NETCDF_CHUNK_SIZE, len(time_indices)),
                     len(lat_indices),
                     len(lon_indices),
                 ),
@@ -215,9 +218,12 @@ def extract_soil_moisture(
                 }
             )
 
-            for output_start in range(0, len(time_indices), TIME_CHUNK_SIZE):
+            chunk_starts = range(
+                0, len(time_indices), NETCDF_CHUNK_SIZE
+            )
+            for output_start in chunk_starts:
                 output_stop = min(
-                    output_start + TIME_CHUNK_SIZE, len(time_indices)
+                    output_start + NETCDF_CHUNK_SIZE, len(time_indices)
                 )
                 input_indices = time_indices[output_start:output_stop]
                 data = np.ma.asarray(
@@ -233,14 +239,33 @@ def extract_soil_moisture(
                 )
                 out_rzsm[output_start:output_stop, :, :] = data
 
+    source_grid_temp_file = output_file.with_name(
+        f"{output_file.stem}_source_grid.tmp{output_file.suffix}"
+    )
+    print(f"Reprojecting extracted subset to {OUTPUT_CRS}...")
     reproject_netcdf(
         output_file,
-        output_file,
+        source_grid_temp_file,
         INPUT_CRS,
         OUTPUT_CRS,
         watershed_file=watershed_file,
     )
-    print(f"Wrote {len(time_indices)} time steps to {output_file.name}")
+    source_grid_output_file = output_file.with_name(
+        f"{output_file.stem.removesuffix('_250m')}_"
+        f"{SOURCE_GRID_SIZE}m{output_file.suffix}"
+    )
+    source_grid_temp_file.replace(source_grid_output_file)
+    print("Resampling projected source grid to the 250 m target grid...")
+    downscale_netcdf(
+        source_grid_output_file,
+        output_file,
+        OUTPUT_CRS,
+        watershed_file=watershed_file,
+    )
+    print(
+        f"Wrote {len(time_indices)} time steps to "
+        f"{source_grid_output_file.name} and {output_file.name}"
+    )
 
 
 def lon_variable_attrs(source):
@@ -256,11 +281,10 @@ def lat_variable_attrs(source):
 # -----------------------------------------------------------------------
 
 if __name__ == "__main__":
-    extract_soil_moisture(
-        INPUT_FILE,
-        WATERSHED_FILE,
-        OUTPUT_FILE,
-        START_YEAR,
-        END_YEAR,
-        INPUT_CRS
-    )
+    write_soil_moisture(
+            INPUT_FILE,
+            WATERSHED_FILE,
+            OUTPUT_FILE,
+            START_YEAR,
+            END_YEAR,
+            INPUT_CRS)
