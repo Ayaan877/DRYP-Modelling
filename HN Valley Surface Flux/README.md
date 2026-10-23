@@ -9,7 +9,7 @@ Hourly surface water flux data and boundary location of the HN-valley discharge 
 5. Create a new CSV file `HN_valley_inflow_coord.csv` and make coloumns - ID, East, North, Elevation and Label. Save the ID, label and coordinates to the csv.
 6. Add the raster layer `DEM_250.asc` to the project and inspect the gridcell in which the inlet point lies. Add the elevation of that cell to the table. 
 7. Run `HN_valley_hourly` to create an hourly dataset of surface flux in mm/hr/gridcell for a duration of 10 yrs with the following features: 
-- Assign zero-flux for all years prior to 2022 and for the months of June-Sept (monsoon). 
+- Assign zero-flux for all years prior to 2020 and for the months of June-Sept (monsoon). 
 - Read the total flux allocation from `HN_valley_allocation.csv` and distribute 50% of the total allocation for all tanks except for the source tank 1 (Chalakaparthi Kere) to all non-zero flux days. Note that the source data is in MLD (million litres per day) which has to be converted to mm/hr/cell (millimetres per hour per 250m gridcell). 
 8. Specify the total duration (2015-2025) and the discharge start date (01/01/2022) and dry months (June-Sept) before running the script. The output will be exported as `HN_valley_hourly_inflow.csv`. 
 

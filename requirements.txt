@@ -1,8 +1,7 @@
+fiona
 matplotlib
+netCDF4
 numpy
 pandas
-netCDF4
 rasterio
-pyproj
-fiona
 tqdm
