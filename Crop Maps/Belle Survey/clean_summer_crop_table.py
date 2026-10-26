@@ -23,7 +23,6 @@ ACRE_TO_HA = 0.40468564224
 ALIAS_MAP = {
 	"survey_no_text": ["Hissa Survey No", "Survey No"],
 	"area_acre": ["acreage"],
-	"crop_name": ["Crop Name (Standardised)"],
 	"crop_detail_english": ["Crop Detail (English)"],
 	"crop_detail_local": ["Crop Detail", "Crop"],
 	"crop_category": ["Crop Category"],
@@ -208,7 +207,6 @@ def clean_chunk(chunk, resolved_columns, year, location_maps, crop_maps):
 		summer_fallow_exception_mask,
 		"ಪಾಳು",
 	)
-	crop_name = get_series_or_na(chunk, resolved_columns["crop_name"])
 	crop_detail_from_dict = crop_detail_kannada.map(crop_maps["crop_detail"])
 	crop_name_from_dict = crop_detail_kannada.map(crop_maps["crop_name"])
 	crop_category_from_dict = crop_detail_kannada.map(crop_maps["crop_category"])
@@ -233,17 +231,14 @@ def clean_chunk(chunk, resolved_columns, year, location_maps, crop_maps):
 	)
 	cleaned_chunk["crop_detail_kannada"] = crop_detail_kannada
 	cleaned_chunk["crop_name"] = first_non_empty(
-		crop_name,
 		crop_name_from_dict,
 		fallow_crop_name,
 	)
 	cleaned_chunk["crop_detail"] = first_non_empty(
-		crop_detail_english,
 		crop_detail_from_dict,
 		fallow_crop_detail,
 	)
 	cleaned_chunk["crop_category"] = first_non_empty(
-		crop_category,
 		crop_category_from_dict,
 		fallow_crop_category,
 	)

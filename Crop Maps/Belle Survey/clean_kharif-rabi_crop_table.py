@@ -24,10 +24,7 @@ ALIAS_MAP = {
 	"season_raw": ["season"],
 	"survey_no_text": ["Survey No"],
 	"area_acre": ["acreage"],
-	"crop_name": ["Crop Name (Standardised)"],
-	"crop_detail": ["Crop Detail (English)"],
 	"crop_detail_kannada": ["Crop Detail"],
-	"crop_category": ["Crop Category"],
 	"kgis_village_id": ["KGISCode"],
 	"source_village_id": ["site_code"],
 }
@@ -212,18 +209,9 @@ def clean_chunk(chunk, resolved_columns, location_maps, crop_maps):
 		* ACRE_TO_HA
 	)
 	cleaned_chunk["crop_detail_kannada"] = crop_detail_kannada
-	cleaned_chunk["crop_detail"] = first_non_empty(
-		chunk[resolved_columns["crop_detail"]],
-		crop_detail_from_dict,
-	)
-	cleaned_chunk["crop_name"] = first_non_empty(
-		chunk[resolved_columns["crop_name"]],
-		crop_name_from_dict,
-	)
-	cleaned_chunk["crop_category"] = first_non_empty(
-		chunk[resolved_columns["crop_category"]],
-		crop_category_from_dict,
-	)
+	cleaned_chunk["crop_detail"] = normalize_text_series(crop_detail_from_dict)
+	cleaned_chunk["crop_name"] = normalize_text_series(crop_name_from_dict)
+	cleaned_chunk["crop_category"] = normalize_text_series(crop_category_from_dict)
 	cleaned_chunk["kgis_village_id"] = normalize_text_series(
 		chunk[resolved_columns["kgis_village_id"]]
 	).str.replace(r"\.0$", "", regex=True)
