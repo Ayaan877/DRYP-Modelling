@@ -14,8 +14,9 @@ OUTPUT = OUT_DIR / "type_composition_stacked.png"
 SUMMARY_OUTPUT = OUT_DIR / "harvested_crop_type_summary.csv"
 AREA_OUTPUT = OUT_DIR / "harvested_area_share_by_season.csv"
 PIVOT_OUTPUT = OUT_DIR / "harvested_crop_acreage_by_season.csv"
+ALL_CROP_PIVOT_OUTPUT = OUT_DIR / "all_crop_acreage_by_season.csv"
 
-TOP_N = 50
+TOP_N = 20
 SEASON_ORDER = {"Kharif": 0, "Rabi": 1, "Summer": 2}  # chronological within a year
 NON_CROP_CATEGORIES = ["Fallow / Non-Agricultural"]
 DOMINANT_SHARE = 0.70
@@ -138,6 +139,30 @@ def harvested_acreage_pivot(crops):
     print(f"Saved {PIVOT_OUTPUT} ({len(pivot)} crop types)")
 
 
+def all_crop_acreage_pivot(crops):
+    """Write area for every crop name with crop names as rows and seasons as columns."""
+    all_area = crops.copy()
+    all_area["season_label"] = all_area["year"].astype(str) + " " + all_area["season"]
+    season_order = (
+        crops.assign(
+            season_label=crops["year"].astype(str) + " " + crops["season"]
+        )[["season_label", "period_idx"]]
+        .drop_duplicates()
+        .sort_values("period_idx")["season_label"]
+    )
+    pivot = (
+        all_area.groupby(["crop_name", "season_label"], dropna=False)["area_ha"]
+        .sum()
+        .unstack(fill_value=0)
+        .reindex(columns=season_order, fill_value=0)
+    )
+    pivot["total_area_ha"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("total_area_ha", ascending=False)
+    pivot.index.name = "crop_name"
+    pivot.to_csv(ALL_CROP_PIVOT_OUTPUT)
+    print(f"Saved {ALL_CROP_PIVOT_OUTPUT} ({len(pivot)} crop names)")
+
+
 def harvested_summary(crops):
     """One row per detailed harvested crop type with prior-season persistence on the same plot."""
     valid = crops["plot_id"].notna()
@@ -252,5 +277,6 @@ if __name__ == "__main__":
     composition_stats(crops)
     harvested_area_share(crops)
     harvested_acreage_pivot(crops)
+    all_crop_acreage_pivot(crops)
     harvested_summary(crops)
     plot_composition(crops)

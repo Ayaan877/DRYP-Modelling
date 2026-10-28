@@ -23,10 +23,13 @@ ALIAS_MAP = {
 	"season_key": ["season_key"],
 	"season_raw": ["season"],
 	"survey_no_text": ["Survey No"],
-	"area_acre": ["acreage"],
+	"extent": ["Extent"],
 	"crop_detail_kannada": ["Crop Detail"],
 	"kgis_village_id": ["KGISCode"],
 	"source_village_id": ["site_code"],
+	"owner_name": ["Owner"],
+	"owner_no": ["Owner No"],
+	"land_code": ["Land Code"],
 }
 
 OUTPUT_COLUMNS = [
@@ -45,6 +48,9 @@ OUTPUT_COLUMNS = [
 	"district",
 	"taluk",
 	"hobli",
+	"owner_name",
+	"owner_no",
+	"land_code",
 ]
 
 SEASON_VALUES = {
@@ -102,16 +108,6 @@ def get_series_or_na(chunk, column_name):
 	return chunk[column_name]
 
 
-def first_non_empty(*series_list):
-	if not series_list:
-		raise ValueError("first_non_empty requires at least one series")
-
-	result = normalize_text_series(series_list[0])
-	for series in series_list[1:]:
-		result = result.fillna(normalize_text_series(series))
-	return result
-
-
 def parse_year_from_season_key(series):
 	year_text = normalize_text_series(series)
 	return pd.to_numeric(
@@ -132,6 +128,19 @@ def parse_parent_survey_number_from_survey_detail(series):
 		survey_detail.str.extract(r"^\s*(\d+)")[0],
 		errors="coerce",
 	).astype("Int64")
+
+
+def parse_extent_to_hectares(series):
+	extent = normalize_text_series(series)
+	parts = extent.str.extract(
+		r"^\s*(\d+)(?:-(\d+))?(?:-(\d+(?:\.\d+)?))?\s*$"
+	)
+	acres = pd.to_numeric(parts[0], errors="coerce")
+	gunthas = pd.to_numeric(parts[1], errors="coerce").fillna(0)
+	annas = pd.to_numeric(parts[2], errors="coerce").fillna(0)
+	total_acres = acres + (gunthas / 40) + (annas / 1600)
+	total_acres = total_acres.where(acres.notna(), pd.NA)
+	return total_acres * ACRE_TO_HA
 
 
 def normalize_output_year(year_value):
@@ -189,9 +198,7 @@ def build_crop_maps(crop_dict):
 def clean_chunk(chunk, resolved_columns, location_maps, crop_maps):
 	cleaned_chunk = pd.DataFrame()
 	survey_detail = normalize_text_series(chunk[resolved_columns["survey_no_text"]])
-	crop_detail_kannada = normalize_text_series(
-		chunk[resolved_columns["crop_detail_kannada"]]
-	)
+	crop_detail_kannada = normalize_text_series(chunk[resolved_columns["crop_detail_kannada"]])
 	crop_detail_from_dict = crop_detail_kannada.map(crop_maps["crop_detail"])
 	crop_name_from_dict = crop_detail_kannada.map(crop_maps["crop_name"])
 	crop_category_from_dict = crop_detail_kannada.map(crop_maps["crop_category"])
@@ -204,9 +211,8 @@ def clean_chunk(chunk, resolved_columns, location_maps, crop_maps):
 		survey_detail
 	)
 	cleaned_chunk["survey_detail"] = survey_detail
-	cleaned_chunk["area_ha"] = (
-		pd.to_numeric(chunk[resolved_columns["area_acre"]], errors="coerce")
-		* ACRE_TO_HA
+	cleaned_chunk["area_ha"] = parse_extent_to_hectares(
+		chunk[resolved_columns["extent"]]
 	)
 	cleaned_chunk["crop_detail_kannada"] = crop_detail_kannada
 	cleaned_chunk["crop_detail"] = normalize_text_series(crop_detail_from_dict)
@@ -218,9 +224,6 @@ def clean_chunk(chunk, resolved_columns, location_maps, crop_maps):
 	cleaned_chunk["source_village_id"] = normalize_text_series(
 		get_series_or_na(chunk, resolved_columns["source_village_id"])
 	).str.replace(r"\.0$", "", regex=True)
-	cleaned_chunk["source_village_id"] = cleaned_chunk["source_village_id"].fillna(
-		cleaned_chunk["kgis_village_id"]
-	)
 
 	kgis_village_ids = cleaned_chunk["kgis_village_id"]
 	cleaned_chunk["kgis_village_name"] = normalize_text_series(
@@ -236,7 +239,55 @@ def clean_chunk(chunk, resolved_columns, location_maps, crop_maps):
 		kgis_village_ids.map(location_maps["hobli"])
 	)
 
+	cleaned_chunk["owner_name"] = (
+		chunk[resolved_columns["owner_name"]]
+		.astype("string")
+		.str.strip()
+		.replace("", pd.NA)
+	)
+	cleaned_chunk["owner_no"] = normalize_text_series(
+		chunk[resolved_columns["owner_no"]]
+	).str.replace(r"\.0$", "", regex=True)
+	cleaned_chunk["land_code"] = normalize_text_series(
+		chunk[resolved_columns["land_code"]]
+	).str.replace(r"\.0$", "", regex=True)
+
 	return cleaned_chunk[OUTPUT_COLUMNS]
+
+
+def count_in_scope_rows(input_file, resolved_columns):
+	# Rows that should reach the output: parseable year and Kharif/Rabi season.
+	season_columns = list(
+		dict.fromkeys(
+			[resolved_columns["season_key"], resolved_columns["season_raw"]]
+		)
+	)
+	in_scope_rows = 0
+	for chunk in pd.read_csv(
+		input_file,
+		usecols=season_columns,
+		dtype="string",
+		chunksize=CHUNK_SIZE,
+	):
+		year = parse_year_from_season_key(chunk[resolved_columns["season_key"]])
+		season = parse_season(chunk[resolved_columns["season_raw"]])
+		in_scope_rows += int((year.notna() & season.isin(["Kharif", "Rabi"])).sum())
+	return in_scope_rows
+
+
+def deduplicate_output_file(output_file):
+	cleaned = pd.read_csv(
+		output_file,
+		dtype="string",
+		keep_default_na=False,
+		encoding=OUTPUT_ENCODING,
+	)
+	before = len(cleaned)
+	deduped = cleaned.drop_duplicates()
+	removed = before - len(deduped)
+	if removed:
+		deduped.to_csv(output_file, index=False, encoding=OUTPUT_ENCODING)
+	return removed
 
 
 def process_input_file(
@@ -336,6 +387,14 @@ def build_crop_reference_tables():
 			created_output_files,
 		)
 
+		expected_rows = count_in_scope_rows(input_file, resolved_columns)
+		written_rows = sum(file_rows_written.values())
+		if written_rows != expected_rows:
+			raise RuntimeError(
+				f"Row count mismatch for {input_file.name}: "
+				f"{expected_rows:,} Kharif/Rabi input rows vs {written_rows:,} written"
+			)
+
 		if not file_rows_written:
 			print(
 				f"No Kharif/Rabi rows found in {input_file.name}; "
@@ -348,7 +407,11 @@ def build_crop_reference_tables():
 				rows_written_by_output.get(output_file, 0) + rows_written
 			)
 
-	return rows_written_by_output
+	duplicates_removed_by_output = {}
+	for output_file in rows_written_by_output:
+		duplicates_removed_by_output[output_file] = deduplicate_output_file(output_file)
+
+	return rows_written_by_output, duplicates_removed_by_output
 
 
 # -----------------------------------------------------------------------
@@ -356,12 +419,17 @@ def build_crop_reference_tables():
 # -----------------------------------------------------------------------
 
 if __name__ == "__main__":
-	rows_written_by_output = build_crop_reference_tables()
+	rows_written_by_output, duplicates_removed_by_output = build_crop_reference_tables()
 
 	total_rows = 0
+	total_duplicates_removed = 0
 	for output_file in sorted(rows_written_by_output.keys()):
 		rows_written = rows_written_by_output[output_file]
 		total_rows += rows_written
+		removed = duplicates_removed_by_output.get(output_file, 0)
+		total_duplicates_removed += removed
 		print(f"Wrote {rows_written:,} cleaned rows to {output_file.name}")
+		print(f"Removed {removed:,} duplicate rows from {output_file.name}")
 
 	print(f"Total rows written: {total_rows:,}")
+	print(f"Total duplicate rows removed: {total_duplicates_removed:,}")
