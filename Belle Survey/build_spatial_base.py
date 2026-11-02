@@ -19,20 +19,20 @@ MAP_FIELDS = {
 	"survey_num": "surveynumberi",
 	"category": "Category",
 	"area_sq_m": "SHAPE.STArea()",
-	"kgis_village_code": "KGISVillageCode",
-	"kgis_village_name": "village",
+	"kgis_code": "KGISVillageCode",
+	"village": "village",
 }
 
 OUTPUT_COLUMNS = [
 	"fid",
 	"survey_num",
 	"category",
-	"area_ha",
-	"kgis_village_code",
-	"kgis_village_name",
+	"area_acres",
+	"kgis_code",
+	"village",
 ]
 
-SQUARE_METERS_PER_HECTARE = 10_000
+SQUARE_METERS_PER_ACRE = 4046.8564224
 
 # -----------------------------------------------------------------------
 # Functions
@@ -97,8 +97,8 @@ def get_required_fields():
 		get_map_field("survey_num"),
 		get_map_field("category"),
 		get_map_field("area_sq_m"),
-		get_map_field("kgis_village_code"),
-		get_map_field("kgis_village_name"),
+		get_map_field("kgis_code"),
+		get_map_field("village"),
 	]
 	if feature_id_field.lower() != "fid":
 		required_fields.append(feature_id_field)
@@ -122,9 +122,9 @@ def get_output_schema(source_geometry_type):
 			("fid", "int"),
 			("survey_num", "int"),
 			("category", "str:80"),
-			("area_ha", "float"),
-			("kgis_village_code", "str:32"),
-			("kgis_village_name", "str:120"),
+			("area_acres", "float"),
+			("kgis_code", "str:32"),
+			("village", "str:120"),
 		]),
 	}
 
@@ -157,12 +157,12 @@ def build_output_feature(source_feature):
 			source_properties[get_map_field("survey_num")]
 		),
 		"category": normalize_text(source_properties[get_map_field("category")]),
-		"area_ha": area_square_meters / SQUARE_METERS_PER_HECTARE,
-		"kgis_village_code": normalize_village_code(
-			source_properties[get_map_field("kgis_village_code")]
+		"area_acres": area_square_meters / SQUARE_METERS_PER_ACRE,
+		"kgis_code": normalize_village_code(
+			source_properties[get_map_field("kgis_code")]
 		),
-		"kgis_village_name": normalize_text(
-			source_properties[get_map_field("kgis_village_name")]
+		"village": normalize_text(
+			source_properties[get_map_field("village")]
 		),
 	}
 

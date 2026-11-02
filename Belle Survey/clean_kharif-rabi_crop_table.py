@@ -11,13 +11,14 @@ INPUT_DIR = SCRIPT_DIR / "Crop_Data_Kharif-Rabi"
 INPUT_PATTERN = "*_kharif-rabi_crop_data.csv"
 OUTPUT_DIR = SCRIPT_DIR / "Crop_Data_Cleaned"
 OUTPUT_TEMPLATE = "{year}_{season}_crop_data_cleaned.csv"
-VILLAGE_DICT_FILE = SCRIPT_DIR / "village_id_dict.json"
+VILLAGE_DICT_FILE = SCRIPT_DIR / "village_code_dict.json"
 CROP_DICT_FILE = SCRIPT_DIR / "crop_dict.json"
 CHUNK_SIZE = 200_000
 OVERWRITE_OUTPUT = True
 OUTPUT_ENCODING = "utf-8-sig"
 
-ACRE_TO_HA = 0.40468564224
+GUNTAS_PER_ACRE = 40
+ANNAS_PER_GUNTA = 16
 
 ALIAS_MAP = {
 	"season_key": ["season_key"],
@@ -25,8 +26,8 @@ ALIAS_MAP = {
 	"survey_no_text": ["Survey No"],
 	"extent": ["Extent"],
 	"crop_detail_kannada": ["Crop Detail"],
-	"kgis_village_id": ["KGISCode"],
-	"source_village_id": ["site_code"],
+	"kgis_code": ["KGISCode"],
+	"site_code": ["site_code"],
 	"owner_name": ["Owner"],
 	"owner_no": ["Owner No"],
 	"land_code": ["Land Code"],
@@ -37,14 +38,14 @@ OUTPUT_COLUMNS = [
 	"season",
 	"survey_num",
 	"survey_detail",
-	"area_ha",
+	"area_acres",
 	"crop_name",
 	"crop_detail",
 	"crop_detail_kannada",
 	"crop_category",
-	"kgis_village_id",
-	"source_village_id",
-	"kgis_village_name",
+	"kgis_code",
+	"site_code",
+	"village",
 	"district",
 	"taluk",
 	"hobli",
@@ -130,7 +131,7 @@ def parse_parent_survey_number_from_survey_detail(series):
 	).astype("Int64")
 
 
-def parse_extent_to_hectares(series):
+def parse_extent_to_acres(series):
 	extent = normalize_text_series(series)
 	parts = extent.str.extract(
 		r"^\s*(\d+)(?:-(\d+))?(?:-(\d+(?:\.\d+)?))?\s*$"
@@ -138,9 +139,12 @@ def parse_extent_to_hectares(series):
 	acres = pd.to_numeric(parts[0], errors="coerce")
 	gunthas = pd.to_numeric(parts[1], errors="coerce").fillna(0)
 	annas = pd.to_numeric(parts[2], errors="coerce").fillna(0)
-	total_acres = acres + (gunthas / 40) + (annas / 1600)
-	total_acres = total_acres.where(acres.notna(), pd.NA)
-	return total_acres * ACRE_TO_HA
+	total_acres = (
+		acres
+		+ (gunthas / GUNTAS_PER_ACRE)
+		+ (annas / (GUNTAS_PER_ACRE * ANNAS_PER_GUNTA))
+	)
+	return total_acres.where(acres.notna(), pd.NA)
 
 
 def normalize_output_year(year_value):
@@ -159,7 +163,7 @@ def load_json_dictionary(dictionary_file):
 
 def build_location_maps(village_dict):
 	return {
-		"kgis_village_name": {
+		"village": {
 			key: value.get("village")
 			for key, value in village_dict.items()
 		},
@@ -211,32 +215,32 @@ def clean_chunk(chunk, resolved_columns, location_maps, crop_maps):
 		survey_detail
 	)
 	cleaned_chunk["survey_detail"] = survey_detail
-	cleaned_chunk["area_ha"] = parse_extent_to_hectares(
+	cleaned_chunk["area_acres"] = parse_extent_to_acres(
 		chunk[resolved_columns["extent"]]
 	)
 	cleaned_chunk["crop_detail_kannada"] = crop_detail_kannada
 	cleaned_chunk["crop_detail"] = normalize_text_series(crop_detail_from_dict)
 	cleaned_chunk["crop_name"] = normalize_text_series(crop_name_from_dict)
 	cleaned_chunk["crop_category"] = normalize_text_series(crop_category_from_dict)
-	cleaned_chunk["kgis_village_id"] = normalize_text_series(
-		chunk[resolved_columns["kgis_village_id"]]
+	cleaned_chunk["kgis_code"] = normalize_text_series(
+		chunk[resolved_columns["kgis_code"]]
 	).str.replace(r"\.0$", "", regex=True)
-	cleaned_chunk["source_village_id"] = normalize_text_series(
-		get_series_or_na(chunk, resolved_columns["source_village_id"])
+	cleaned_chunk["site_code"] = normalize_text_series(
+		get_series_or_na(chunk, resolved_columns["site_code"])
 	).str.replace(r"\.0$", "", regex=True)
 
-	kgis_village_ids = cleaned_chunk["kgis_village_id"]
-	cleaned_chunk["kgis_village_name"] = normalize_text_series(
-		kgis_village_ids.map(location_maps["kgis_village_name"])
+	site_codes = cleaned_chunk["site_code"]
+	cleaned_chunk["village"] = normalize_text_series(
+		site_codes.map(location_maps["village"])
 	)
 	cleaned_chunk["district"] = normalize_text_series(
-		kgis_village_ids.map(location_maps["district"])
+		site_codes.map(location_maps["district"])
 	)
 	cleaned_chunk["taluk"] = normalize_text_series(
-		kgis_village_ids.map(location_maps["taluk"])
+		site_codes.map(location_maps["taluk"])
 	)
 	cleaned_chunk["hobli"] = normalize_text_series(
-		kgis_village_ids.map(location_maps["hobli"])
+		site_codes.map(location_maps["hobli"])
 	)
 
 	cleaned_chunk["owner_name"] = (

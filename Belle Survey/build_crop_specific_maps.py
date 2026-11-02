@@ -19,7 +19,7 @@ OUTPUT_DIR = SCRIPT_DIR / "Crop_Map_GPKGs"
 LOG_DIR = OUTPUT_DIR / "logs"
 OVERWRITE_OUTPUT = True
 
-VILLAGE_DICT_FILE = SCRIPT_DIR / "village_id_dict.json"
+VILLAGE_DICT_FILE = SCRIPT_DIR / "village_code_dict.json"
 CROP_DICT_FILE = SCRIPT_DIR / "crop_dict.json"
 
 PARCEL_CATEGORY_VALUE = "parcel"
@@ -29,9 +29,9 @@ ASSIGNMENT_LAYER = "crop_assignments"
 BASE_FIELD_ALIASES = {
 	"survey_num": ["survey_num"],
 	"category": ["category"],
-	"kgis_village_code": ["kgis_village_code"],
-	"kgis_village_name": ["kgis_village_name"],
-	"area_ha": ["area_ha"],
+	"site_code": ["kgis_code"],
+	"village": ["village"],
+	"area_acres": ["area_acres"],
 }
 
 CROP_FIELD_ALIASES = {
@@ -39,13 +39,12 @@ CROP_FIELD_ALIASES = {
 	"season": ["season"],
 	"survey_num": ["survey_num"],
 	"survey_detail": ["survey_detail"],
-	"area_ha": ["area_ha"],
+	"area_acres": ["area_acres"],
 	"crop_name": ["crop_name"],
 	"crop_detail": ["crop_detail"],
 	"crop_detail_kannada": ["crop_detail_kannada"],
 	"crop_category": ["crop_category"],
-	"kgis_village_id": ["kgis_village_id"],
-	"source_village_code": ["source_village_id"],
+	"site_code": ["site_code"],
 	"owner_name": ["owner_name"],
 	"owner_no": ["owner_no"],
 	"land_code": ["land_code"],
@@ -59,13 +58,13 @@ SUMMARY_COLUMNS = [
 	"label",
 	"survey_num",
 	"category",
-	"kgis_village_code",
-	"kgis_village_name",
+	"site_code",
+	"village",
 	"district",
 	"taluk",
 	"hobli",
-	"survey_area_ha",
-	"total_cropped_area_ha",
+	"survey_area_acres",
+	"total_cropped_area_acres",
 	"subfeature_list",
 	"crop_count",
 	"crop_names",
@@ -83,13 +82,13 @@ ASSIGNMENT_COLUMNS = [
 	"survey_num",
 	"survey_detail",
 	"category",
-	"kgis_village_code",
-	"kgis_village_name",
+	"site_code",
+	"village",
 	"district",
 	"taluk",
 	"hobli",
-	"survey_area_ha",
-	"cropped_area_ha",
+	"survey_area_acres",
+	"cropped_area_acres",
 	"crop_name",
 	"crop_detail_en",
 	"crop_name_kannada",
@@ -198,8 +197,8 @@ def parse_output_key_from_file_name(input_file):
 	return year, season, f"{year}_{season}"
 
 
-def build_assignment_layer_name(output_key):
-	return f"{ASSIGNMENT_LAYER}_{output_key}"
+def build_crop_map_output_path(output_key):
+	return OUTPUT_DIR / f"{output_key}_belle_survey_crop_map.gpkg"
 
 
 def get_selected_crop_files(input_dir, target_years, target_seasons):
@@ -345,34 +344,32 @@ def prepare_spatial_base(spatial_base_file, spatial_layer, location_maps):
 	else:
 		base["spatial_fid"] = pd.Series(base.index, index=base.index).astype("Int64")
 
-	base["kgis_village_code"] = normalize_village_code_series(base["kgis_village_code"])
-	base["source_village_code"] = base["kgis_village_code"]
+	base["site_code"] = normalize_village_code_series(base["site_code"])
 	base["survey_num"] = normalize_survey_num_series(base["survey_num"])
 	base["category"] = normalize_text_series(base["category"])
-	base["kgis_village_name"] = first_non_empty(
-		base["kgis_village_name"],
-		base["kgis_village_code"].map(location_maps["village"]),
+	base["village"] = first_non_empty(
+		base["village"],
+		base["site_code"].map(location_maps["village"]),
 	)
-	base["district"] = normalize_text_series(base["kgis_village_code"].map(location_maps["district"]))
-	base["taluk"] = normalize_text_series(base["kgis_village_code"].map(location_maps["taluk"]))
-	base["hobli"] = normalize_text_series(base["kgis_village_code"].map(location_maps["hobli"]))
-	base["survey_area_ha"] = pd.to_numeric(base["area_ha"], errors="coerce")
+	base["district"] = normalize_text_series(base["site_code"].map(location_maps["district"]))
+	base["taluk"] = normalize_text_series(base["site_code"].map(location_maps["taluk"]))
+	base["hobli"] = normalize_text_series(base["site_code"].map(location_maps["hobli"]))
+	base["survey_area_acres"] = pd.to_numeric(base["area_acres"], errors="coerce")
 	base["base_category_lower"] = base["category"].str.lower()
 	base["label"] = build_label_series(base["survey_num"], base["category"])
-	base["_match_key"] = build_match_key(base["kgis_village_code"], base["survey_num"])
+	base["_match_key"] = build_match_key(base["site_code"], base["survey_num"])
 
 	required_output_columns = [
 		"spatial_fid",
 		"label",
 		"survey_num",
 		"category",
-		"source_village_code",
-		"kgis_village_code",
-		"kgis_village_name",
+		"site_code",
+		"village",
 		"district",
 		"taluk",
 		"hobli",
-		"survey_area_ha",
+		"survey_area_acres",
 		"base_category_lower",
 		"_match_key",
 		"geometry",
@@ -385,18 +382,14 @@ def load_and_prepare_crop_table(input_file, crop_lookup):
 	resolved = resolve_columns_by_alias(crop_raw.columns, CROP_FIELD_ALIASES)
 	crop = crop_raw.rename(columns={column: key for key, column in resolved.items()}).copy()
 
-	crop["kgis_village_code"] = normalize_village_code_series(crop["kgis_village_id"])
-	crop["source_village_code"] = first_non_empty(
-		get_series_or_na(crop, "source_village_code"),
-		crop["kgis_village_code"],
-	)
+	crop["site_code"] = normalize_village_code_series(crop["site_code"])
 	crop["survey_num"] = normalize_survey_num_series(crop["survey_num"])
 	crop["survey_detail"] = normalize_text_series(get_series_or_na(crop, "survey_detail"))
 	crop["crop_name_kannada"] = normalize_text_series(crop["crop_detail_kannada"])
 	crop["crop_name"] = normalize_text_series(crop["crop_name"])
 	crop["crop_detail_en"] = normalize_text_series(crop["crop_detail"])
 	crop["crop_category"] = normalize_text_series(crop["crop_category"])
-	crop["cropped_area_ha"] = pd.to_numeric(crop["area_ha"], errors="coerce")
+	crop["cropped_area_acres"] = pd.to_numeric(crop["area_acres"], errors="coerce")
 	crop["owner_name"] = normalize_text_series(get_series_or_na(crop, "owner_name"))
 	crop["owner_no"] = normalize_text_series(get_series_or_na(crop, "owner_no")).str.replace(r"\.0$", "", regex=True)
 	crop["land_code"] = normalize_text_series(get_series_or_na(crop, "land_code")).str.replace(r"\.0$", "", regex=True)
@@ -414,22 +407,21 @@ def load_and_prepare_crop_table(input_file, crop_lookup):
 	crop["crop_name"] = first_non_empty(crop["crop_name"], crop_name_from_dict)
 	crop["crop_detail_en"] = first_non_empty(crop["crop_detail_en"], crop_detail_from_dict)
 	crop["crop_category"] = first_non_empty(crop["crop_category"], crop_category_from_dict)
-	crop["_match_key"] = build_match_key(crop["kgis_village_code"], crop["survey_num"])
+	crop["_match_key"] = build_match_key(crop["site_code"], crop["survey_num"])
 
-	valid = crop["kgis_village_code"].notna() & crop["survey_num"].notna() & crop["crop_name"].notna()
+	valid = crop["site_code"].notna() & crop["survey_num"].notna() & crop["crop_name"].notna()
 	crop = crop.loc[valid].copy()
 	return crop[
 		[
 			"_match_key",
-			"kgis_village_code",
+			"site_code",
 			"survey_num",
 			"survey_detail",
 			"crop_name",
 			"crop_detail_en",
 			"crop_name_kannada",
 			"crop_category",
-			"cropped_area_ha",
-			"source_village_code",
+			"cropped_area_acres",
 			"owner_name",
 			"owner_no",
 			"land_code",
@@ -453,12 +445,8 @@ def build_assignment_layer(
 		indicator=True,
 		suffixes=("_base", "_crop"),
 	)
-	merged["kgis_village_code"] = merged["kgis_village_code_base"]
+	merged["site_code"] = merged["site_code_base"]
 	merged["survey_num"] = merged["survey_num_base"]
-	merged["source_village_code"] = first_non_empty(
-		get_series_or_na(merged, "source_village_code_crop"),
-		get_series_or_na(merged, "source_village_code_base"),
-	)
 
 	unmatched_crop_records = crop_rows.merge(
 		base[["_match_key"]].drop_duplicates(),
@@ -484,17 +472,17 @@ def build_assignment_layer(
 			"survey_num",
 			"survey_detail",
 			"category",
-			"kgis_village_code",
-			"kgis_village_name",
+			"site_code",
+			"village",
 			"district",
 			"taluk",
 			"hobli",
-			"survey_area_ha",
+			"survey_area_acres",
 			"crop_name",
 			"crop_detail_en",
 			"crop_name_kannada",
 			"crop_category",
-			"cropped_area_ha",
+			"cropped_area_acres",
 			"owner_name",
 			"owner_no",
 			"land_code",
@@ -513,12 +501,12 @@ def build_assignment_layer(
 				"survey_num",
 				"survey_detail",
 				"category",
-				"kgis_village_code",
-				"kgis_village_name",
+				"site_code",
+				"village",
 				"district",
 				"taluk",
 				"hobli",
-				"survey_area_ha",
+				"survey_area_acres",
 				"owner_name",
 				"owner_no",
 				"land_code",
@@ -533,7 +521,7 @@ def build_assignment_layer(
 	unassigned_polygons["crop_detail_en"] = non_agri_meta["crop_detail_en"]
 	unassigned_polygons["crop_name_kannada"] = non_agri_meta["crop_name_kannada"]
 	unassigned_polygons["crop_category"] = non_agri_meta["crop_category"]
-	unassigned_polygons["cropped_area_ha"] = 0.0
+	unassigned_polygons["cropped_area_acres"] = 0.0
 
 	unassigned_is_parcel = (
 		unassigned_polygons["category"]
@@ -550,7 +538,7 @@ def build_assignment_layer(
 	unassigned_parcel["crop_detail_en"] = fallow_meta["crop_detail_en"]
 	unassigned_parcel["crop_name_kannada"] = fallow_meta["crop_name_kannada"]
 	unassigned_parcel["crop_category"] = fallow_meta["crop_category"]
-	unassigned_parcel["cropped_area_ha"] = 0.0
+	unassigned_parcel["cropped_area_acres"] = 0.0
 	unassigned_non_parcel["_subfeature_text"] = unassigned_non_parcel["crop_name"]
 	unassigned_parcel["_subfeature_text"] = unassigned_parcel["crop_name"]
 
@@ -596,7 +584,7 @@ def build_summary_layer(base, assignment, summary_subfeatures, year: int, season
 			crop_categories=("crop_category", unique_join),
 			crop_names_detail_en=("crop_detail_en", unique_join),
 			crop_names_kannada=("crop_name_kannada", unique_join),
-			total_cropped_area_ha=("cropped_area_ha", "sum"),
+			total_cropped_area_acres=("cropped_area_acres", "sum"),
 		)
 		.reset_index()
 	)
@@ -622,7 +610,7 @@ def build_summary_layer(base, assignment, summary_subfeatures, year: int, season
 	summary["season"] = season
 	summary["label"] = build_label_series(summary["survey_num"], summary["category"])
 	summary["crop_count"] = pd.to_numeric(summary["crop_count"], errors="coerce").fillna(0).astype("Int64")
-	summary["total_cropped_area_ha"] = pd.to_numeric(summary["total_cropped_area_ha"], errors="coerce")
+	summary["total_cropped_area_acres"] = pd.to_numeric(summary["total_cropped_area_acres"], errors="coerce")
 	return summary[SUMMARY_COLUMNS + ["geometry"]].copy()
 
 
@@ -653,8 +641,8 @@ def build_gpkg_for_crop_file(crop_file, base, crop_lookup, non_agri_meta, fallow
 	summary = build_summary_layer(base, assignment, summary_subfeatures, year, season, output_key)
 
 	print("Step 4/7: Preparing output records...")
-	print("Step 5/7: Deferring file writes to consolidated outputs...")
-	print("Step 6/7: Using single assignment layer per season-year...")
+	print("Step 5/7: Preparing separate season-year crop map output...")
+	print("Step 6/7: Using one assignment layer per output file...")
 	print("Step 7/7: Writing logs...")
 	unmatched_log = write_logs(output_key, unmatched_crop_records)
 
@@ -702,9 +690,13 @@ if __name__ == "__main__":
 	year_start = selected_years[0]
 	year_end = selected_years[-1]
 	summary_output_gpkg = OUTPUT_DIR / f"{year_start}-{year_end}_belle_survey_summary.gpkg"
-	crop_map_output_gpkg = OUTPUT_DIR / f"{year_start}-{year_end}_belle_survey_crop_map.gpkg"
 	remove_existing_output(summary_output_gpkg)
-	remove_existing_output(crop_map_output_gpkg)
+	legacy_crop_map_output_gpkg = OUTPUT_DIR / f"{year_start}-{year_end}_belle_survey_crop_map.gpkg"
+	remove_existing_output(legacy_crop_map_output_gpkg)
+	for year_value in selected_years:
+		for season_value in TARGET_SEASONS:
+			output_key = f"{year_value}_{str(season_value).strip().lower()}"
+			remove_existing_output(build_crop_map_output_path(output_key))
 
 	results = []
 	summary_frames = []
@@ -712,16 +704,14 @@ if __name__ == "__main__":
 		result = build_gpkg_for_crop_file(crop_file, base, crop_lookup, non_agri_meta, fallow_meta)
 		results.append(result)
 		summary_frames.append(result["summary"])
-		assignment_layer_name = build_assignment_layer_name(result["output_key"])
-		write_mode = "w" if len(results) == 1 else "a"
+		crop_map_output_gpkg = build_crop_map_output_path(result["output_key"])
 		result["assignment"].to_file(
 			crop_map_output_gpkg,
-			layer=assignment_layer_name,
+			layer=ASSIGNMENT_LAYER,
 			driver="GPKG",
-			mode=write_mode,
 		)
 		print(
-			f"  -> Wrote assignment layer {assignment_layer_name} in {crop_map_output_gpkg.name} | "
+			f"  -> Wrote crop map file {crop_map_output_gpkg.name} | "
 			f"summary={result['summary_count']:,}, "
 			f"crop_assignments={result['assignment_count']:,}, "
 			f"crops={result['crop_count']:,}, "
@@ -742,7 +732,7 @@ if __name__ == "__main__":
 	print(f"Targets (years): {', '.join(str(year_value) for year_value in TARGET_YEARS)}")
 	print(f"Targets (seasons): {', '.join(str(season_value).lower() for season_value in TARGET_SEASONS)}")
 	print(f"Summary output GPKG: {summary_output_gpkg}")
-	print(f"Crop map output GPKG: {crop_map_output_gpkg}")
+	print(f"Crop map output directory: {OUTPUT_DIR}")
 	print(f"Files processed: {len(results):,}")
 	print(f"Base polygons (total): {base.shape[0]:,}")
 	print(f"Base polygons (parcel): {int(base['base_category_lower'].fillna('').eq(PARCEL_CATEGORY_VALUE).sum()):,}")

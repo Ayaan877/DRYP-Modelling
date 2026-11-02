@@ -24,11 +24,11 @@ INPUT_COLUMNS = [
     "year", 
     "season", 
     "survey_num", 
-    "area_ha", 
+    "area_acres", 
     "crop_name", 
     "crop_detail",
     "crop_category", 
-    "kgis_village_id",
+    "kgis_code",
 ]
 
 # -----------------------------------------------------------------------
@@ -40,7 +40,7 @@ def load_crops():
         pd.read_csv(
             path,
             usecols=INPUT_COLUMNS,
-            dtype={"survey_num": "string", "kgis_village_id": "string"},
+            dtype={"survey_num": "string", "kgis_code": "string"},
         )
         for path in sorted(DATA_DIR.glob("*_crop_data_cleaned.csv"))
     ]
@@ -56,16 +56,16 @@ def load_crops():
     crops["type"] = crops["crop_detail"].str.replace(
         r"(?i)^harvested\s*-\s*", "", regex=True
     ).str.strip()
-    crops["plot_id"] = crops["kgis_village_id"] + "|" + crops["survey_num"]
+    crops["plot_id"] = crops["kgis_code"] + "|" + crops["survey_num"]
     return crops
 
 
 def composition_stats(crops):
     """Share of crop names with a single type / one dominant type (non-harvested records)."""
     standard = crops.loc[~crops["harvested"]]
-    areas = standard.groupby(["crop_name", "type"])["area_ha"].sum()
+    areas = standard.groupby(["crop_name", "type"])["area_acres"].sum()
     areas = areas[areas > 0].reset_index()
-    areas["share"] = areas["area_ha"] / areas.groupby("crop_name")["area_ha"].transform("sum")
+    areas["share"] = areas["area_acres"] / areas.groupby("crop_name")["area_acres"].transform("sum")
     per_crop = areas.groupby("crop_name").agg(n_types=("type", "size"), top_share=("share", "max"))
 
     n_crops = len(per_crop)
@@ -84,14 +84,14 @@ def harvested_area_share(crops):
     """Harvested share of total and of cropped (non fallow/non-agricultural) area per season."""
     rows = []
     for (year, season), g in crops.groupby(["year", "season"]):
-        harv = g.loc[g["harvested"], "area_ha"].sum()
-        total = g["area_ha"].sum()
+        harv = g.loc[g["harvested"], "area_acres"].sum()
+        total = g["area_acres"].sum()
         cropped = g.loc[~g["crop_category"].isin(NON_CROP_CATEGORIES)]
-        cropped_total = cropped["area_ha"].sum()
-        harv_cropped = cropped.loc[cropped["harvested"], "area_ha"].sum()
+        cropped_total = cropped["area_acres"].sum()
+        harv_cropped = cropped.loc[cropped["harvested"], "area_acres"].sum()
         harvested_types = (
             g.loc[g["harvested"]]
-            .groupby("type")["area_ha"]
+            .groupby("type")["area_acres"]
             .sum()
             .sort_values(ascending=False)
         )
@@ -102,10 +102,10 @@ def harvested_area_share(crops):
         rows.append({
             "year": year,
             "season": season,
-            "harvested_area_ha": harv,
-            "total_surveyed_area_ha": total,
+            "harvested_area_acres": harv,
+            "total_surveyed_area_acres": total,
             "harvested_pct_of_total_area": 100 * harv / total,
-            "cropped_area_ha": cropped_total,
+            "cropped_area_acres": cropped_total,
             "harvested_pct_of_cropped_area": 100 * harv_cropped / cropped_total,
             "harvested_crop_composition": crop_composition,
         })
@@ -127,13 +127,13 @@ def harvested_acreage_pivot(crops):
         .sort_values("period_idx")["season_label"]
     )
     pivot = (
-        harvested.groupby(["type", "season_label"])["area_ha"]
+        harvested.groupby(["type", "season_label"])["area_acres"]
         .sum()
         .unstack(fill_value=0)
         .reindex(columns=season_order, fill_value=0)
     )
-    pivot["total_harvested_area_ha"] = pivot.sum(axis=1)
-    pivot = pivot.sort_values("total_harvested_area_ha", ascending=False)
+    pivot["total_harvested_area_acres"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("total_harvested_area_acres", ascending=False)
     pivot.index.name = "crop_type"
     pivot.to_csv(PIVOT_OUTPUT)
     print(f"Saved {PIVOT_OUTPUT} ({len(pivot)} crop types)")
@@ -151,13 +151,13 @@ def all_crop_acreage_pivot(crops):
         .sort_values("period_idx")["season_label"]
     )
     pivot = (
-        all_area.groupby(["crop_name", "season_label"], dropna=False)["area_ha"]
+        all_area.groupby(["crop_name", "season_label"], dropna=False)["area_acres"]
         .sum()
         .unstack(fill_value=0)
         .reindex(columns=season_order, fill_value=0)
     )
-    pivot["total_area_ha"] = pivot.sum(axis=1)
-    pivot = pivot.sort_values("total_area_ha", ascending=False)
+    pivot["total_area_acres"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("total_area_acres", ascending=False)
     pivot.index.name = "crop_name"
     pivot.to_csv(ALL_CROP_PIVOT_OUTPUT)
     print(f"Saved {ALL_CROP_PIVOT_OUTPUT} ({len(pivot)} crop names)")
@@ -188,7 +188,7 @@ def harvested_summary(crops):
 
     harvested["season_label"] = harvested["year"].astype(str) + " " + harvested["season"]
     harvested_area = (
-        crops.loc[crops["harvested"]].groupby(["crop_name", "type"])["area_ha"].sum()
+        crops.loc[crops["harvested"]].groupby(["crop_name", "type"])["area_acres"].sum()
     )
     rows = []
     for (crop_name, crop_type), g in harvested.groupby(["crop_name", "type"]):
@@ -198,7 +198,7 @@ def harvested_summary(crops):
             "crop_name": crop_name,
             "crop_type": crop_type,
             "harvested_plot_season_records": len(g),
-            "harvested_area_ha": harvested_area[(crop_name, crop_type)],
+            "harvested_area_acres": harvested_area[(crop_name, crop_type)],
             "seasons": ", ".join(seasons),
             "records_with_previous_season_data": len(eligible),
             "records_preceded_by_same_crop_prev_season": int(eligible["preceded"].sum()),
@@ -212,12 +212,12 @@ def harvested_summary(crops):
 
 
 def plot_composition(crops):
-    top_crops = crops.groupby("crop_name")["area_ha"].sum().nlargest(TOP_N).index
+    top_crops = crops.groupby("crop_name")["area_acres"].sum().nlargest(TOP_N).index
     standard = crops.loc[~crops["harvested"] & crops["crop_name"].isin(top_crops)]
-    areas = standard.groupby(["crop_name", "type"], as_index=False)["area_ha"].sum()
-    areas = areas[areas["area_ha"] > 0]
-    areas["share"] = areas["area_ha"] / areas.groupby("crop_name")["area_ha"].transform("sum")
-    order = standard.groupby("crop_name")["area_ha"].sum().reindex(top_crops).sort_values().index
+    areas = standard.groupby(["crop_name", "type"], as_index=False)["area_acres"].sum()
+    areas = areas[areas["area_acres"] > 0]
+    areas["share"] = areas["area_acres"] / areas.groupby("crop_name")["area_acres"].transform("sum")
+    order = standard.groupby("crop_name")["area_acres"].sum().reindex(top_crops).sort_values().index
     areas["crop_name"] = pd.Categorical(areas["crop_name"], categories=order, ordered=True)
     areas = areas.sort_values(["crop_name", "share"])
 
