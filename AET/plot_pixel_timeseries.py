@@ -11,9 +11,9 @@ from pathlib import Path
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-VARIABLES = ["SSEBop", "PET"]
+VARIABLES = ["ETf", "ETf gapfilled"]
 YEARS = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
-RESOLUTION_LABEL = "5500m" 
+RESOLUTION_LABEL = "750m" 
 SSEBOP_RESOLUTION_LABEL = "1000m"
 N_COLUMNS = 3
 
@@ -21,14 +21,16 @@ N_COLUMNS = 3
 VARIABLE_SETTINGS = {
 	"AET": (f"Watershed AET {RESOLUTION_LABEL}", f"watershed_bhuvan_AET_{RESOLUTION_LABEL}_*.tif", None, "tab:blue"),
 	"ETf": (f"Watershed ETf {RESOLUTION_LABEL}", f"watershed_ETf_{RESOLUTION_LABEL}_*.tif", None, "tab:green"),
+	"ETf gapfilled": (f"Watershed ETf {RESOLUTION_LABEL} - gapfilled", f"watershed_ETf_{RESOLUTION_LABEL}_*.tif", None, "tab:orange"),
 	"PET": ("Daily PET", "{year}_daily_pet_Badenhalli_subwatershed.nc", "pet", "tab:red"),
 	"SSEBop": ("Watershed AET SSEBop", f"watershed_ssebop_AET_{SSEBOP_RESOLUTION_LABEL}_*.tif", None, "tab:purple"),
 }
-VARIABLE_RESOLUTIONS = {"SSEBop": SSEBOP_RESOLUTION_LABEL}
+VARIABLE_RESOLUTIONS = {"SSEBop": SSEBOP_RESOLUTION_LABEL, "ETf gapfilled": RESOLUTION_LABEL}
 DATE_PATTERN = re.compile(r"(\d{8})")
 VARIABLE_UNITS = {
 	"AET": "mm/day",
 	"ETf": "dim-less",
+	"ETf gapfilled": "dim-less",
 	"PET": "mm/day",
 	"SSEBop": "mm/day",
 }

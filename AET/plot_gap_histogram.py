@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import date, timedelta
 from pathlib import Path
+import re
+import rasterio
 from netCDF4 import Dataset
 
 # -----------------------------------------------------------------------
@@ -9,11 +11,11 @@ from netCDF4 import Dataset
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATASET = "SSEBop"  # "Bhuvan" or "SSEBop"
-YEARS = [2021, 2022, 2023, 2024, 2025]
-N_COLUMNS = 2
+DATASET = "ETf gapfilled"  # "Bhuvan", "SSEBop", or "ETf gapfilled"
+YEARS = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
+N_COLUMNS = 3
 
-# Exported watershed NetCDFs from watershed_aet.py
+# Exported watershed NetCDFs from watershed_aet.py, or gapfilled daily ETf rasters
 if DATASET == "SSEBop":
 	RESOLUTION_LABEL = "1000m"
 	DATA_DIR = SCRIPT_DIR / "Watershed AET SSEBop"
@@ -22,13 +24,18 @@ elif DATASET == "Bhuvan":
 	RESOLUTION_LABEL = "750m"
 	DATA_DIR = SCRIPT_DIR / f"Watershed AET {RESOLUTION_LABEL}"
 	FILE_PREFIX = "watershed_bhuvan_AET"
+elif DATASET == "ETf gapfilled":
+	RESOLUTION_LABEL = "750m"
+	DATA_DIR = SCRIPT_DIR / "Watershed ETf 750m - gapfilled"
+	FILE_PREFIX = "watershed_ETf"
 else:
-	raise ValueError('DATASET must be set to "Bhuvan" or "SSEBop"')
+	raise ValueError('DATASET must be set to "Bhuvan", "SSEBop", or "ETf gapfilled"')
 
 TIME_ORIGIN = date(2015, 1, 1)  # days-since origin of the "time" variable
 TIME_VARIABLE = "time"
 AET_VARIABLE = "aet"
 NODATA = -99999
+DATE_PATTERN = re.compile(r"(\d{8})")
 
 # True: count missing days before the first / after the last observation
 INCLUDE_EDGE_GAPS = True
@@ -60,6 +67,27 @@ def load_validity_cube(year):
 	"""Boolean cube (periods in year, lat, lon): True where the exported watershed file has valid data."""
 	slots = period_slots(year)
 	slot_index = {d: i for i, d in enumerate(slots)}
+	if DATASET == "ETf gapfilled":
+		cube = None
+		listed = np.zeros(len(slots), dtype=bool)
+		year_dir = DATA_DIR / f"{year}_{RESOLUTION_LABEL}"
+		for tif in sorted(year_dir.glob(f"{FILE_PREFIX}_{RESOLUTION_LABEL}_*.tif")):
+			match = DATE_PATTERN.search(tif.stem)
+			if not match:
+				continue
+			text = match.group(1)
+			d = date(int(text[:4]), int(text[4:6]), int(text[6:]))
+			if d not in slot_index:
+				continue
+			with rasterio.open(tif) as src:
+				frame = src.read(1).astype(float)
+			if cube is None:
+				cube = np.zeros((len(slots),) + frame.shape, dtype=bool)
+			cube[slot_index[d]] = np.isfinite(frame) & (frame != NODATA)
+			listed[slot_index[d]] = True
+		if cube is None:
+			raise FileNotFoundError(f"No gapfilled ETf rasters for {year} in {year_dir}")
+		return cube, listed
 	with Dataset(nc_file_for(year)) as ds:
 		times = np.ma.filled(ds[TIME_VARIABLE][:], -1).astype(int)
 		aet = ds[AET_VARIABLE]
@@ -120,7 +148,7 @@ def plot_year(ax, year):
 	period_label = "dekads" if DATASET == "SSEBop" else "days"
 	ax.set_xlabel(f"Gap length (consecutive nodata {period_label})")
 	ax.set_ylabel("Number of gaps (all pixels)")
-	dataset_label = f"{'SSEBop AET' if DATASET == 'SSEBop' else 'AET'} {RESOLUTION_LABEL}"
+	dataset_label = "ETf gapfilled" if DATASET == "ETf gapfilled" else f"{'SSEBop AET' if DATASET == 'SSEBop' else 'AET'} {RESOLUTION_LABEL}"
 	ax.set_title(f"{dataset_label} {year}: {n_pixels} pixels, {len(gaps)} gaps")
 
 
