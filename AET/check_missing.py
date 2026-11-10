@@ -1,214 +1,181 @@
 import csv
 import datetime as dt
-import re
-from collections import defaultdict
 from pathlib import Path
+import fiona
+import numpy as np
+from openpyxl import Workbook
+from rasterio.features import geometry_mask
+import rasterio
+from rasterio.warp import transform_geom
+import watershed_data
 
 # -----------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------
 
-DATASET = "SSEBop"  # "Bhuvan" or "SSEBop"
-RESOLUTION = "750m"
+DATASET = "ETf SSEBop ERA5 Land 30m"
 START_DATE = dt.date(2015, 1, 1)
 END_DATE = dt.date(2025, 12, 31)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATASET_CONFIGS = {
-	"Bhuvan": {
-		"input_dir": f"Bhuvan AET {RESOLUTION} - Extracted",
-		"output_prefix": f"Bhuvan{RESOLUTION}",
-		"period_type": "daily",
-		"period_label": "days",
-	},
-	"SSEBop": {
-		"input_dir": "SSEBop Dekadal AET - Extracted",
-		"output_prefix": "SSEBopDekadal",
-		"period_type": "dekadal",
-		"period_label": "dekads",
-	},
-}
-if DATASET not in DATASET_CONFIGS:
-	raise ValueError(f"DATASET must be one of {', '.join(DATASET_CONFIGS)}")
-DATASET_CONFIG = DATASET_CONFIGS[DATASET]
+DATASET_CONFIG = watershed_data.DATASETS[DATASET]
+OUTPUT_DIR = SCRIPT_DIR / DATASET_CONFIG.folder
+if DATASET_CONFIG.cadence_days != 1:
+	raise ValueError(f"{DATASET} is not a daily dataset")
 
-INPUT_DIR = SCRIPT_DIR / DATASET_CONFIG["input_dir"]
-
-OUTPUT_DIR = SCRIPT_DIR
-OUTPUT_PREFIX = DATASET_CONFIG["output_prefix"]
-COUNT_OUTPUT = OUTPUT_DIR / f"{OUTPUT_PREFIX}_missing_count.csv"
-MATRIX_OUTPUT = OUTPUT_DIR / f"{OUTPUT_PREFIX}_missing_matrix.csv"
-ZERO_BYTE_OUTPUT = OUTPUT_DIR / f"{OUTPUT_PREFIX}_zero_byte.csv"
-
-DATE_FORMAT = re.compile(r"(?<!\d)(?:19|20)\d{6}(?!\d)")
-SSEBOP_DATE_FORMAT = re.compile(
-	r"\bd(?P<year>(?:19|20)\d{2})(?P<month>0[1-9]|1[0-2])(?P<dekad>[1-3])(?!\d)"
-)
+OUTPUT_PREFIX = DATASET.replace(" ", "_")
+MISSING_DATES_OUTPUT = OUTPUT_DIR / f"{OUTPUT_PREFIX}_missing_dates.csv"
+PER_PIXEL_OUTPUT = OUTPUT_DIR / f"{OUTPUT_PREFIX}_missing_values_per_pixel.tif"
+MATRIX_OUTPUT = OUTPUT_DIR / f"{OUTPUT_PREFIX}_missing_pixel_matrices.xlsx"
+WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
 
 # -----------------------------------------------------------------------
 # Functions
 # -----------------------------------------------------------------------
 
-def get_date(token):
-	try:
-		return dt.datetime.strptime(token, "%Y%m%d").date()
-	except ValueError:
-		return None
-
-
-def iter_date_range(start, end):
-	days = (end - start).days
-	for offset in range(days + 1):
+def iter_dates(start, end):
+	for offset in range((end - start).days + 1):
 		yield start + dt.timedelta(days=offset)
 
 
-def iter_dekadal_range(start, end):
-	current = dt.date(start.year, start.month, 1)
-	while current <= end:
-		for day in (1, 11, 21):
-			period = dt.date(current.year, current.month, day)
-			if start <= period <= end:
-				yield period
-		if current.month == 12:
-			current = dt.date(current.year + 1, 1, 1)
-		else:
-			current = dt.date(current.year, current.month + 1, 1)
-
-
-def extract_member_date(member_name, period_type):
-	filename = Path(member_name).name
-	if period_type == "daily":
-		tokens = DATE_FORMAT.findall(filename)
-		if not tokens:
-			return None
-		return get_date(tokens[-1])
-
-	match = SSEBOP_DATE_FORMAT.search(filename)
-	if not match:
-		return None
+def load_year(year):
 	try:
-		day = (1, 11, 21)[int(match.group("dekad")) - 1]
-		return dt.date(int(match.group("year")), int(match.group("month")), day)
-	except ValueError:
+		return watershed_data.load_data(DATASET, year)
+	except FileNotFoundError:
 		return None
 
 
-def collect_extracted_data(input_dir, period_type):
-	if period_type == "daily":
-		expected_dates = set(iter_date_range(START_DATE, END_DATE))
-	else:
-		expected_dates = set(iter_dekadal_range(START_DATE, END_DATE))
-	present_dates = set()
-	zero_byte_dates = set()
-	tiff_count = 0
-
-	for tif_path in input_dir.rglob("*"):
-		if not tif_path.is_file() or tif_path.suffix.lower() != ".tif":
-			continue
-		tiff_count += 1
-		file_date = extract_member_date(tif_path.name, period_type)
-		if not file_date or file_date not in expected_dates:
-			continue
-		if tif_path.stat().st_size == 0:
-			zero_byte_dates.add(file_date)
-		else:
-			present_dates.add(file_date)
-
-	return expected_dates, present_dates, zero_byte_dates, tiff_count
+def load_watershed_mask(series):
+	with fiona.open(WATERSHED_FILE) as source:
+		source_crs = source.crs_wkt or source.crs
+		geometries = [
+			transform_geom(source_crs, series.crs, feature["geometry"])
+			for feature in source
+			if feature["geometry"] is not None
+		]
+	if not geometries:
+		raise ValueError(f"No watershed geometries found in {WATERSHED_FILE}")
+	return geometry_mask(
+		geometries,
+		out_shape=series.values.shape[1:],
+		transform=series.transform,
+		invert=True,
+		all_touched=False,
+	)
 
 
-def count_missing_periods(missing_dates, expected_dates, output_path, period_label):
-	counts = defaultdict(int)
-	for day in missing_dates:
-		counts[day.year] += 1
-
-	years = sorted({day.year for day in expected_dates})
-	with output_path.open("w", newline="", encoding="utf-8") as file:
+def write_missing_date_counts(year_counts):
+	with MISSING_DATES_OUTPUT.open("w", newline="", encoding="utf-8") as file:
 		writer = csv.writer(file)
-		writer.writerow(["year", f"missing_{period_label}"])
+		writer.writerow(["year", "missing_dates", "no_observation_dates", "all_nodata_dates"])
+		for year in sorted(year_counts):
+			missing_dates, no_observation_dates, all_nodata_dates = year_counts[year]
+			writer.writerow([year, missing_dates, no_observation_dates, all_nodata_dates])
+
+
+def write_monthly_matrices(missing_pixels_by_date, years):
+	workbook = Workbook(write_only=True)
+	for month in range(1, 13):
+		worksheet = workbook.create_sheet(title=dt.date(2000, month, 1).strftime("%B"))
+		worksheet.append(["year", *range(1, 32)])
 		for year in years:
-			writer.writerow([year, counts[year]])
-
-
-def write_missing_matrix(expected_dates, present_dates, output_path, period_type):
-	years_months = sorted({(day.year, day.month) for day in expected_dates})
-	with output_path.open("w", newline="", encoding="utf-8") as file:
-		writer = csv.writer(file)
-		if period_type == "dekadal":
-			writer.writerow(["year", "month", "dekad_1", "dekad_2", "dekad_3"])
-			for year, month in years_months:
-				row = [year, month]
-				for day in (1, 11, 21):
-					current = dt.date(year, month, day)
-					row.append(current in present_dates if current in expected_dates else "Null")
-				writer.writerow(row)
-			return
-
-		writer.writerow(["year", "month", *range(1, 32)])
-		for year, month in years_months:
-			row = [year, month]
+			row = [year]
 			for day in range(1, 32):
 				try:
 					current = dt.date(year, month, day)
 				except ValueError:
-					row.append("Null")
+					row.append(None)
 					continue
-
-				if current in expected_dates:
-					row.append(current in present_dates)
+				if START_DATE <= current <= END_DATE:
+					row.append(missing_pixels_by_date[current])
 				else:
-					row.append("Null")
-			writer.writerow(row)
+					row.append(None)
+			worksheet.append(row)
+	workbook.save(MATRIX_OUTPUT)
 
-
-def write_date_list(path, dates, period_type):
-	with path.open("w", newline="", encoding="utf-8") as file:
-		writer = csv.writer(file)
-		writer.writerow(["dekad_start_date" if period_type == "dekadal" else "date"])
-		for day in sorted(dates):
-			writer.writerow([day.isoformat()])
-
-
-# -----------------------------------------------------------------------
-# Run Script
-# -----------------------------------------------------------------------
 
 def run_missing_date_checker():
-	if DATASET == "Bhuvan" and RESOLUTION not in {"5500m", "750m"}:
-		raise ValueError('RESOLUTION must be set to "5500m" or "750m"')
-	if not INPUT_DIR.is_dir():
-		raise FileNotFoundError(f"Input directory does not exist: {INPUT_DIR}")
+	if START_DATE > END_DATE:
+		raise ValueError("START_DATE must be on or before END_DATE")
+	years = list(range(START_DATE.year, END_DATE.year + 1))
+	first_series = None
+	first_year = None
+	for year in years:
+		first_series = load_year(year)
+		if first_series is not None:
+			first_year = year
+			break
+	if first_series is None:
+		raise FileNotFoundError(f"No watershed data found for {DATASET} in {START_DATE.year}-{END_DATE.year}")
 
-	expected_dates, present_dates, zero_byte_dates, tiff_count = (
-		collect_extracted_data(INPUT_DIR, DATASET_CONFIG["period_type"])
-	)
-	if not tiff_count:
-		raise RuntimeError(f"No TIFF files found in {INPUT_DIR}")
+	grid_shape = first_series.values.shape[1:]
+	inside_watershed = load_watershed_mask(first_series)
+	if not inside_watershed.any():
+		raise ValueError(f"Watershed mask does not overlap the grid for {DATASET}")
+	missing_pixels_by_date = {}
+	year_counts = {}
+	grid_metadata = (first_series.transform, first_series.crs)
+	total_missing_value_counts = np.zeros(grid_shape, dtype=np.uint32)
 
-	missing_dates = (expected_dates - present_dates) | zero_byte_dates
+	for year in years:
+		series = first_series if year == first_year else load_year(year)
+		if series is not None:
+			if series.values.shape[1:] != grid_shape or (series.transform, series.crs) != grid_metadata:
+				raise ValueError(f"Grid changed between years for {DATASET}, including {year}")
+			frames_by_date = {
+				observed_date: series.values[index]
+				for index, observed_date in enumerate(series.dates)
+			}
+			if len(frames_by_date) != len(series.dates):
+				raise ValueError(f"Duplicate dates found for {DATASET} in {year}")
+		else:
+			frames_by_date = {}
+
+		no_observation_dates = 0
+		all_nodata_dates = 0
+		missing_dates = 0
+		missing_value_counts = np.zeros(grid_shape, dtype=np.uint32)
+		for current in iter_dates(max(START_DATE, dt.date(year, 1, 1)), min(END_DATE, dt.date(year, 12, 31))):
+			frame = frames_by_date.get(current)
+			if frame is None:
+				missing = inside_watershed.copy()
+				no_observation_dates += 1
+			else:
+				missing = ~np.isfinite(frame) & inside_watershed
+				if missing[inside_watershed].all():
+					all_nodata_dates += 1
+			if missing[inside_watershed].all():
+				missing_dates += 1
+			missing_value_counts += missing
+			missing_pixels_by_date[current] = int(missing.sum())
+		year_counts[year] = (missing_dates, no_observation_dates, all_nodata_dates)
+		total_missing_value_counts += missing_value_counts
 
 	OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-	count_missing_periods(
-		missing_dates, expected_dates, COUNT_OUTPUT, DATASET_CONFIG["period_label"]
-	)
-	write_missing_matrix(
-		expected_dates, present_dates, MATRIX_OUTPUT, DATASET_CONFIG["period_type"]
-	)
-	write_date_list(ZERO_BYTE_OUTPUT, zero_byte_dates, DATASET_CONFIG["period_type"])
+	write_missing_date_counts(year_counts)
+	write_monthly_matrices(missing_pixels_by_date, years)
+	total_missing_value_counts = total_missing_value_counts.astype(np.float32)
+	total_missing_value_counts[~inside_watershed] = -9999
+	with rasterio.open(
+		PER_PIXEL_OUTPUT,
+		"w",
+		driver="GTiff",
+		height=grid_shape[0],
+		width=grid_shape[1],
+		count=1,
+		dtype="float32",
+		crs=first_series.crs,
+		transform=first_series.transform,
+		nodata=-9999,
+		compress="deflate",
+	) as output:
+		output.write(total_missing_value_counts, 1)
 
 	print(f"Dataset: {DATASET}")
-	if DATASET == "Bhuvan":
-		print(f"Resolution: {RESOLUTION}")
-	print(f"Scanned extracted folder: {INPUT_DIR}")
-	print(f"TIFF files found: {tiff_count}")
-	print(f"Expected {DATASET_CONFIG['period_label']}: {len(expected_dates)}")
-	print(f"Present TIFF {DATASET_CONFIG['period_label']}: {len(present_dates & expected_dates)}")
-	print(f"Zero-byte TIFF {DATASET_CONFIG['period_label']}: {len(zero_byte_dates & expected_dates)}")
-	print(f"Missing {DATASET_CONFIG['period_label']}: {len(missing_dates)}")
-	print(f"Wrote: {COUNT_OUTPUT}")
-	print(f"Wrote: {MATRIX_OUTPUT}")
-	print(f"Wrote: {ZERO_BYTE_OUTPUT}")
-	print("Matrix CSV meaning: True=present data, False=absent data, Null=non-applicable period.")
+	print(f"Date range: {START_DATE} to {END_DATE}")
+	print(f"Missing date counts: {MISSING_DATES_OUTPUT}")
+	print(f"Missing pixels per day matrices: {MATRIX_OUTPUT}")
+	print(f"Missing values per pixel: {PER_PIXEL_OUTPUT}")
 
 
 if __name__ == "__main__":

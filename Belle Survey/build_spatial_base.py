@@ -19,7 +19,7 @@ MAP_FIELDS = {
 	"survey_num": "surveynumberi",
 	"category": "Category",
 	"area_sq_m": "SHAPE.STArea()",
-	"kgis_code": "KGISVillageCode",
+	"kgis_code": "KGIS_village_code",
 	"village": "village",
 }
 

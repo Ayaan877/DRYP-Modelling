@@ -17,7 +17,6 @@ OUTPUT_DIR = SCRIPT_DIR / "Crop_Matrices"
 EXCLUDED_CROP_NAMES = {"fallow land", "non-agricultural land"}
 EXCLUDED_CROP_CATEGORIES = {"fallow / non-agricultural"}
 
-
 # -----------------------------------------------------------------------
 # Functions
 # -----------------------------------------------------------------------

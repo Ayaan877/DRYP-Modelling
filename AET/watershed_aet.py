@@ -19,36 +19,47 @@ from tqdm import tqdm
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATASET = "SSEBop"  # "Bhuvan" or "SSEBop"
+DATASET = "SSEBop"  # "Bhuvan", "SSEBop", or "SSEBop 30m"
 RESOLUTION_LABEL = "1000m"  # Bhuvan: "5500m" or "750m"; SSEBop: "1000m"
 
 # SSEBop source pixels are 0.009652 deg (~1046 x 1069 m at the watershed), so a 1000 m grid is used
 DATASET_CONFIGS = {
 	"Bhuvan": {
+		"resolution_label": RESOLUTION_LABEL,
 		"input_root": f"Bhuvan AET {RESOLUTION_LABEL} - Extracted",
-		"output_dir": f"Watershed AET {RESOLUTION_LABEL}",
+		"output_dir": f"Watershed AET Bhuvan {RESOLUTION_LABEL}",
 		"file_prefix": "watershed_bhuvan_AET",
 		"title": f"Daily Actual Evapotranspiration (AET), Bhuvan {RESOLUTION_LABEL}",
 		"units": "mm/day",
 		"long_name": "daily actual evapotranspiration",
 	},
-	"SSEBop": {
-		"input_root": "SSEBop Dekadal AET - Extracted",
-		"output_dir": "Watershed AET SSEBop",
+	"SSEBop 1000m": {
+		"resolution_label": RESOLUTION_LABEL,
+		"input_root": f"SSEBop Dekadal AET {RESOLUTION_LABEL} - Extracted",
+		"output_dir": f"Watershed AET SSEBop {RESOLUTION_LABEL}",
 		"file_prefix": "watershed_ssebop_AET",
 		"title": f"Dekadal Actual Evapotranspiration (AET), SSEBop {RESOLUTION_LABEL}",
 		"units": "mm/dekad",
 		"long_name": "dekadal actual evapotranspiration",
 	},
+	"SSEBop 30m": {
+		"resolution_label": RESOLUTION_LABEL,
+		"input_root": f"SSEBop AET {RESOLUTION_LABEL} - Extracted",
+		"output_dir": f"Watershed AET SSEBop {RESOLUTION_LABEL}",
+		"file_prefix": "watershed_ssebop_AET",
+		"title": f"Daily Actual Evapotranspiration (AET), SSEBop {RESOLUTION_LABEL}",
+		"units": "mm/day",
+		"long_name": "daily actual evapotranspiration",
+	},
 }
 if DATASET not in DATASET_CONFIGS:
 	raise ValueError(f"DATASET must be one of {', '.join(DATASET_CONFIGS)}")
 CONFIG = DATASET_CONFIGS[DATASET]
+RESOLUTION_LABEL = str(CONFIG["resolution_label"])
 
 INPUT_ROOT = SCRIPT_DIR / CONFIG["input_root"]
 WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
 OUTPUT_DIR = SCRIPT_DIR / CONFIG["output_dir"]
-SOURCE_CRS = "EPSG:4326"
 WATERSHED_CRS = "EPSG:32643"
 DATE_PATTERN = re.compile(r"(\d{8})")
 SSEBOP_DATE_PATTERN = re.compile(r"^d(\d{4})(0[1-9]|1[0-2])([1-3])_", re.IGNORECASE)
@@ -75,11 +86,6 @@ CRS_VARIABLE = "crs"
 def read_watershed():
 	with fiona.open(WATERSHED_FILE) as src:
 		return [feature["geometry"] for feature in src]
-
-
-def reproject_watershed(watershed_shape):
-	return [transform_geom(WATERSHED_CRS, SOURCE_CRS, geom) 
-	        for geom in watershed_shape]
 
 
 def bounds_of(geometries):
@@ -131,7 +137,7 @@ def footprint_mask(watershed_shape, target_transform, width, height):
 	return footprint
 
 
-def mask_raster(raster_file, reprojected_watershed, target_transform, width, height, footprint):
+def mask_raster(raster_file, watershed_shape, target_transform, width, height, footprint):
 	"""Resample (nearest) onto the common UTM grid, keeping every pixel touching the watershed.
 
 	The source is only cropped to a padded bounding box (not masked by the polygon), so
@@ -140,8 +146,13 @@ def mask_raster(raster_file, reprojected_watershed, target_transform, width, hei
 	with rasterio.open(raster_file) as src:
 		if src.crs is None:
 			raise RasterioIOError(f"{raster_file.name} has no CRS/georeferencing")
-		minx, miny, maxx, maxy = bounds_of(reprojected_watershed)
-		pad = 2 * max(abs(src.transform.a), abs(src.transform.e)) + (BUFFER_PIXELS + 1) * GRID_RESOLUTION / 90000
+		source_watershed = [
+			transform_geom(WATERSHED_CRS, src.crs, geom) for geom in watershed_shape
+		]
+		minx, miny, maxx, maxy = bounds_of(source_watershed)
+		pixel_size = max(abs(src.transform.a), abs(src.transform.e))
+		meters_per_unit = 90000 if src.crs.is_geographic else src.crs.linear_units_factor[1]
+		pad = 2 * pixel_size + (BUFFER_PIXELS + 1) * GRID_RESOLUTION / meters_per_unit
 		src_transform = src.transform
 		col_start = max(int(np.floor((minx - pad - src_transform.c) / src_transform.a)), 0)
 		col_stop = min(int(np.ceil((maxx + pad - src_transform.c) / src_transform.a)), src.width)
@@ -149,7 +160,9 @@ def mask_raster(raster_file, reprojected_watershed, target_transform, width, hei
 		row_stop = min(int(np.ceil((miny - pad - src_transform.f) / src_transform.e)), src.height)
 		data = src.read(1, window=((row_start, row_stop), (col_start, col_stop))).astype(np.float64)
 		transform = src_transform * Affine.translation(col_start, row_start)
-		invalid = (data == src.nodata) | (data > MAX_VALID_AET) | ~np.isfinite(data)
+		invalid = (data > MAX_VALID_AET) | ~np.isfinite(data)
+		if src.nodata is not None:
+			invalid |= data == src.nodata
 		source = np.where(invalid, NODATA, data).astype(np.float32)
 		source_crs = src.crs
 	target = np.full((height, width), NODATA, dtype=np.float32)
@@ -314,7 +327,6 @@ def validate_outputs(skipped_files=()):
 if __name__ == "__main__":
 	OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 	watershed_shape = read_watershed()
-	reprojected_watershed = reproject_watershed(watershed_shape)
 
 	tif_files = list_input_tifs()
 
@@ -337,7 +349,8 @@ if __name__ == "__main__":
 				with warnings.catch_warnings():
 					warnings.simplefilter("ignore", NotGeoreferencedWarning)
 					frame = mask_raster(
-						tif_file, reprojected_watershed, target_transform, 						grid_width, grid_height, footprint)
+						tif_file, watershed_shape, target_transform,
+						grid_width, grid_height, footprint)
 			except RasterioIOError as err:
 				skipped_files.append((tif_file, str(err)))
 				continue

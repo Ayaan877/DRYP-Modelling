@@ -10,46 +10,27 @@ import pandas as pd
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-INPUT_DIR = SCRIPT_DIR / "Crop_Data_Kharif-Rabi"
-INPUT_PATTERN = "*_kharif-rabi_crop_data.csv"
+INPUT_SOURCES = [
+	(SCRIPT_DIR / "Crop_Data_Kharif-Rabi", "*_kharif-rabi_crop_data.csv")
+]
+SPATIAL_BASE_GPKG = SCRIPT_DIR / "spatial_base.gpkg"
+SPATIAL_BASE_LAYER = "spatial_base"
 CHUNK_SIZE = 200_000
 OUTPUT_ENCODING = "utf-8-sig"
 
-KGIS_CODE_COLUMN = "KGISCode"
-SITE_CODE_COLUMN = "site_code"
-VILLAGE_COLUMN = "KGIS_village_name"
-NAME_FIELDS = ["village", "district", "taluk", "hobli"]
-FIELD_TO_SOURCE_COLUMN = {
-	"village": VILLAGE_COLUMN,
-	"district": "District",
-	"taluk": "Taluk",
-	"hobli": "Hobli",
-}
-
-SPATIAL_BASE_GPKG = SCRIPT_DIR / "spatial_base.gpkg"
-SPATIAL_BASE_LAYER = "spatial_base"
-SPATIAL_BASE_CODE_COLUMN = "kgis_code"
-
-OUTPUT_ATTRIBUTES = SCRIPT_DIR / "spatial_base_attributes.csv"
+OUTPUT_SOURCE = SCRIPT_DIR / "source_village_lookup.csv"
+OUTPUT_SPATIAL = SCRIPT_DIR / "spatial_village_lookup.csv"
 OUTPUT_DICT = SCRIPT_DIR / "village_code_dict.json"
-OUTPUT_KEY = SCRIPT_DIR / "village_code_canonical.csv"
-OUTPUT_CONFLICTS = SCRIPT_DIR / "village_code_conflicts.csv"
+OUTPUT_CANONICAL = SCRIPT_DIR / "village_dict_canonical.csv"
+OUTPUT_DICT_CONFLICTS = SCRIPT_DIR / "village_dict_conflicts.csv"
 
-CONFLICT_COLUMNS = [
-	"map_code",
-	"kgis_code",
-	"site_code",
-	"conflict_type",
-	"field",
-	"canonical_value",
-	"variants",
+NAME_FIELDS = ["village", "district", "taluk", "hobli"]
+SOURCE_COLUMNS = ["season", "kgis_code", "site_code"] + NAME_FIELDS
+DICT_CONFLICT_COLUMNS = [
+	"spatial_code", "kgis_code", "site_code", "season"
+] + ["spatial_village"] + NAME_FIELDS + [
+	"conflict_type", "field", "canonical_value", "variant"
 ]
-
-CONFLICT_VARIANTS = "multiple variants"
-CONFLICT_DISTINCT_GEOMETRIES = "kgis and site codes match different map codes"
-CONFLICT_NO_MATCH = "no map code match"
-
-ENGLISH_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\s\.\-'/&,()]*$")
 
 # -----------------------------------------------------------------------
 # Functions
@@ -58,270 +39,237 @@ ENGLISH_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\s\.\-'/&,()]*$")
 def normalize_text(value):
 	if value is None or pd.isna(value):
 		return None
-
-	text = str(value).replace("\ufeff", "")
-	text = re.sub(r"\s+", " ", text).strip()
-	if text == "":
-		return None
-	return text
+	text = re.sub(r"\s+", " ", str(value).replace("\ufeff", "")).strip()
+	return text or None
 
 
 def normalize_code(value):
 	text = normalize_text(value)
 	if text is not None and text.endswith(".0"):
-		text = text[:-2]
+		return text[:-2]
 	return text
 
 
-def normalize_for_match(value):
+def normalize_name(value):
 	text = normalize_text(value)
 	if text is None:
 		return None
-	return text.casefold()
-
-
-def is_english_name(value):
-	text = normalize_text(value)
-	if text is None:
-		return False
-	return bool(ENGLISH_NAME_PATTERN.fullmatch(text))
+	return re.sub(r"\s+", "", text).casefold()
 
 
 def read_input_files():
-	input_files = sorted(INPUT_DIR.glob(INPUT_PATTERN))
+	input_files = sorted(
+		path
+		for directory, pattern in INPUT_SOURCES
+		for path in directory.glob(pattern)
+	)
 	if not input_files:
-		raise FileNotFoundError(
-			f"No files matched {INPUT_PATTERN!r} in {INPUT_DIR}"
-		)
+		raise FileNotFoundError(f"No input files matched the configured sources: {INPUT_SOURCES}")
 	return input_files
 
 
-def export_spatial_base_attributes():
-	if not SPATIAL_BASE_GPKG.exists():
-		raise FileNotFoundError(
-			f"Spatial base GeoPackage not found: {SPATIAL_BASE_GPKG}"
+def source_file_columns(input_file):
+	columns = pd.read_csv(input_file, nrows=0, encoding=OUTPUT_ENCODING).columns
+	required = ["KGISCode", "site_code", "District", "Taluk", "Hobli"]
+	missing = [column for column in required if column not in columns]
+	village_columns = [
+		column for column in ("KGIS_village_name", "Village") if column in columns
+	]
+	if not village_columns:
+		missing.append("KGIS_village_name or Village")
+
+	summer_match = re.fullmatch(r"(\d{4})_summer_crop_data\.csv", input_file.name, re.I)
+	if summer_match:
+		file_season = f"summer_{summer_match.group(1)}"
+	else:
+		file_season = None
+		for column in ("season", "season_key"):
+			if column not in columns:
+				missing.append(column)
+			else:
+				required.append(column)
+	if missing:
+		raise ValueError(f"Missing required columns in {input_file.name}: {missing}")
+	return list(dict.fromkeys(required + village_columns)), village_columns, file_season
+
+
+def parse_season(season, season_key, input_file):
+	season_text = normalize_text(season)
+	key_text = normalize_text(season_key)
+	season_match = re.search(r"\b(kharif|rabi|summer)\b", season_text or "", re.I)
+	year_match = re.match(r"^(\d{4})(?:_|$)", key_text or "")
+	if season_match is None or year_match is None:
+		raise ValueError(
+			f"Invalid season or season_key in {input_file.name}: "
+			f"{season_text!r}, {key_text!r}"
 		)
-
-	uri = f"{SPATIAL_BASE_GPKG.resolve().as_uri()}?mode=ro"
-	with closing(sqlite3.connect(uri, uri=True)) as connection:
-		geometry_row = connection.execute(
-			"SELECT column_name FROM gpkg_geometry_columns WHERE table_name = ?",
-			(SPATIAL_BASE_LAYER,),
-		).fetchone()
-		geometry_column = geometry_row[0] if geometry_row else None
-
-		columns = [
-			row[1]
-			for row in connection.execute(
-				f'PRAGMA table_info("{SPATIAL_BASE_LAYER}")'
-			)
-			if row[1] != geometry_column
-		]
-		select_list = ", ".join(f'"{column}"' for column in columns)
-		query = f'SELECT {select_list} FROM "{SPATIAL_BASE_LAYER}"'
-
-		feature_count = 0
-		header = True
-		for chunk in pd.read_sql_query(query, connection, chunksize=CHUNK_SIZE):
-			chunk.to_csv(
-				OUTPUT_ATTRIBUTES,
-				mode="w" if header else "a",
-				header=header,
-				index=False,
-				encoding=OUTPUT_ENCODING if header else "utf-8",
-			)
-			header = False
-			feature_count += len(chunk)
-
-	return feature_count
+	return f"{season_match.group(1).lower()}_{year_match.group(1)}"
 
 
-def read_map_codes():
-	attributes = pd.read_csv(
-		OUTPUT_ATTRIBUTES,
-		usecols=[SPATIAL_BASE_CODE_COLUMN],
-		dtype="string",
-		encoding=OUTPUT_ENCODING,
-	)
-	codes = {
-		normalize_code(value)
-		for value in attributes[SPATIAL_BASE_CODE_COLUMN].dropna().unique()
-	}
-	codes.discard(None)
-	return codes
-
-
-def build_canonical_lookup(input_files, map_codes):
-	canonical: dict[str, dict[str, str | None]] = {
-		code: {field: None for field in NAME_FIELDS} for code in map_codes
-	}
-	# casefolded spelling -> first spelling encountered, per map code and field
-	variants = {
-		code: {field: {} for field in NAME_FIELDS} for code in map_codes
-	}
-	source_codes = {code: {"kgis": set(), "site": set()} for code in map_codes}
-	# (kgis_code, site_code) -> village names seen, in encounter order
-	pair_villages = {}
-
-	use_columns = list(dict.fromkeys(
-		[KGIS_CODE_COLUMN, SITE_CODE_COLUMN] + list(FIELD_TO_SOURCE_COLUMN.values())
-	))
-
+def build_source_lookup(input_files):
+	first_rows = {}
+	variant_rows = {}
 	for input_file in input_files:
-		reader = pd.read_csv(
-			input_file,
-			usecols=use_columns,
-			dtype="string",
-			chunksize=CHUNK_SIZE,
-			encoding=OUTPUT_ENCODING,
-		)
+		usecols, village_columns, file_season = source_file_columns(input_file)
 		print(f"Processing {input_file.name}...")
-
+		reader = pd.read_csv(
+			input_file, usecols=usecols, dtype="string",
+			chunksize=CHUNK_SIZE, encoding=OUTPUT_ENCODING,
+		)
 		for chunk in reader:
-			for row in chunk.drop_duplicates().itertuples(index=False, name=None):
-				row_data = dict(zip(chunk.columns, row))
-				kgis_code = normalize_code(row_data[KGIS_CODE_COLUMN])
-				site_code = normalize_code(row_data[SITE_CODE_COLUMN])
-				if kgis_code is None and site_code is None:
-					continue
-
-				field_values = {
-					field: normalize_text(row_data[column])
-					for field, column in FIELD_TO_SOURCE_COLUMN.items()
+			for values in chunk.drop_duplicates().itertuples(index=False, name=None):
+				row = dict(zip(chunk.columns, values))
+				season = file_season or parse_season(
+					row["season"], row["season_key"], input_file
+				)
+				village = next((
+					normalize_text(row[column])
+					for column in village_columns
+					if normalize_text(row[column]) is not None
+				), None)
+				entry = {
+					"season": season,
+					"kgis_code": normalize_code(row["KGISCode"]),
+					"site_code": normalize_code(row["site_code"]),
+					"village": village,
+					"district": normalize_text(row["District"]),
+					"taluk": normalize_text(row["Taluk"]),
+					"hobli": normalize_text(row["Hobli"]),
 				}
+				identity = (season, entry["site_code"], entry["kgis_code"])
+				first_rows.setdefault(identity, entry)
+				signature = tuple(entry[field] for field in NAME_FIELDS)
+				variant_rows.setdefault(identity, {}).setdefault(signature, entry)
 
-				kgis_matches = kgis_code in map_codes
-				site_matches = site_code in map_codes
-
-				if (
-					kgis_matches
-					and site_matches
-					and kgis_code != site_code
-				) or not (kgis_matches or site_matches):
-					village_names = pair_villages.setdefault(
-						(kgis_code, site_code), {}
-					)
-					village = field_values["village"]
-					if is_english_name(village):
-						village_names.setdefault(normalize_for_match(village), village)
-
-				matched_codes = {
-					code
-					for code in (kgis_code, site_code)
-					if code is not None and code in map_codes
-				}
-				for map_code in matched_codes:
-					if kgis_code is not None:
-						source_codes[map_code]["kgis"].add(kgis_code)
-					if site_code is not None:
-						source_codes[map_code]["site"].add(site_code)
-
-					for field_name, field_value in field_values.items():
-						if not is_english_name(field_value):
-							continue
-
-						if canonical[map_code][field_name] is None:
-							canonical[map_code][field_name] = field_value
-
-						variants[map_code][field_name].setdefault(
-							normalize_for_match(field_value), field_value
-						)
-
-	return canonical, variants, source_codes, pair_villages
+	return list(first_rows.values()), variant_rows
 
 
-def build_conflict_report(
-	canonical, variants, source_codes, pair_villages, map_codes
-):
+def build_spatial_lookup(spatial_file, layer):
+	if not spatial_file.exists():
+		raise FileNotFoundError(f"Spatial base GeoPackage not found: {spatial_file}")
+	uri = f"{spatial_file.resolve().as_uri()}?mode=ro"
+	with closing(sqlite3.connect(uri, uri=True)) as connection:
+		columns = {
+			row[1] for row in connection.execute(f'PRAGMA table_info("{layer}")')
+		}
+		if not {"kgis_code", "village"}.issubset(columns):
+			raise ValueError(f"Layer {layer!r} must contain kgis_code and village")
+		rows = connection.execute(
+			f'SELECT DISTINCT kgis_code, village FROM "{layer}"'
+		)
+		unique = {}
+		for code, village in rows:
+			entry = (normalize_code(code), normalize_text(village))
+			unique.setdefault(entry, None)
+	return [
+		{"kgis_code": code, "village": village}
+		for code, village in unique
+	]
+
+
+SEASON_ORDER = {"kharif": 0, "rabi": 1, "summer": 2}
+
+
+def season_sort_key(season):
+	name, year = season.split("_")
+	return int(year), SEASON_ORDER[name]
+
+
+def format_name(value):
+	text = normalize_text(value)
+	return text.lower().capitalize() if text is not None else None
+
+
+def build_canonical_lookup(source_rows, variant_rows, spatial_rows):
+	map_codes = {
+		row["kgis_code"]
+		for row in spatial_rows if row["kgis_code"] is not None
+	}
+	spatial_names_by_code = {}
+	for spatial_row in spatial_rows:
+		code = spatial_row["kgis_code"]
+		name = spatial_row["village"]
+		normalized = normalize_name(name)
+		if code is None or normalized is None:
+			continue
+		spatial_names_by_code.setdefault(code, {}).setdefault(normalized, name)
+
+	matches = []
 	conflicts = []
-
-	for map_code in sorted(canonical):
-		for field_name in NAME_FIELDS:
-			spellings = list(variants[map_code][field_name].values())
-			if len(spellings) <= 1:
-				continue
-
+	for sequence, row in enumerate(source_rows):
+		code = row["kgis_code"]
+		if code not in map_codes:
 			conflicts.append({
-				"map_code": map_code,
-				"kgis_code": ", ".join(sorted(source_codes[map_code]["kgis"])),
-				"site_code": ", ".join(sorted(source_codes[map_code]["site"])),
-				"conflict_type": CONFLICT_VARIANTS,
-				"field": field_name,
-				"canonical_value": canonical[map_code][field_name],
-				"variants": " | ".join(spellings),
+				**row, "spatial_code": None, "spatial_village": None,
+				"conflict_type": "no KGIS code match",
+				"field": "kgis_code", "canonical_value": None, "variant": code,
 			})
+			continue
+		matches.append((sequence, row, code))
 
-	for kgis_code, site_code in sorted(
-		pair_villages, key=lambda pair: (pair[0] or "", pair[1] or "")
-	):
-		village_names = list(pair_villages[(kgis_code, site_code)].values())
-		kgis_matches = kgis_code in map_codes
-		site_matches = site_code in map_codes
-
-		if kgis_matches and site_matches:
-			matched = [kgis_code, site_code]
-			conflict_type = CONFLICT_DISTINCT_GEOMETRIES
-			map_code = ", ".join(matched)
-			canonical_value = " | ".join(
-				f"{code}: {canonical[code]['village']}" for code in matched
-			)
-			difference = [
-				f"kgis_code {kgis_code} and site_code {site_code} "
-				f"each match a different map code"
-			] + [f"source village: {name}" for name in village_names]
-		else:
-			conflict_type = CONFLICT_NO_MATCH
-			map_code = None
-			canonical_value = None
-			difference = [
-				f"neither kgis_code {kgis_code} nor site_code {site_code} "
-				f"matches a map code"
-			] + [f"source village: {name}" for name in village_names]
-
-		conflicts.append({
-			"map_code": map_code,
-			"kgis_code": kgis_code,
-			"site_code": site_code,
-			"conflict_type": conflict_type,
-			"field": "village",
-			"canonical_value": canonical_value,
-			"variants": " | ".join(difference),
-		})
-
-	return conflicts
-
-
-def write_outputs(canonical, conflicts):
-	saved = {
-		code: names
-		for code, names in canonical.items()
-		if any(names[field] is not None for field in NAME_FIELDS)
+	latest = {}
+	for sequence, row, code in matches:
+		identity = (row["season"], row["site_code"], row["kgis_code"])
+		for variant in variant_rows[identity].values():
+			order = (season_sort_key(row["season"]), sequence)
+			for field in NAME_FIELDS:
+				if variant[field] is None:
+					continue
+				best = latest.setdefault(code, {}).get(field)
+				if best is None or order >= best[0]:
+					latest[code][field] = (order, format_name(variant[field]))
+	names_by_code = {
+		code: {field: fields.get(field, (None, None))[1] for field in NAME_FIELDS}
+		for code, fields in latest.items()
 	}
 
+	dictionary = {}
+	seen_variants = set()
+	for sequence, row, code in matches:
+		names = names_by_code[code]
+		dictionary[code] = names
+		identity = (row["season"], row["site_code"], code)
+		for variant in variant_rows[identity].values():
+			for field in NAME_FIELDS:
+				value = variant[field]
+				if value is None or normalize_name(value) == normalize_name(names[field]):
+					continue
+				key = (code, field, normalize_name(value))
+				if key in seen_variants:
+					continue
+				seen_variants.add(key)
+				conflicts.append({
+					**variant, "spatial_code": code,
+					"spatial_village": "; ".join(
+						spatial_names_by_code.get(code, {}).values()
+					) or None,
+					"conflict_type": "location name variant",
+					"field": field,
+					"canonical_value": names[field], "variant": value,
+				})
+	return dictionary, conflicts
+
+
+def write_csv(path, rows, columns):
+	pd.DataFrame(rows, columns=columns).to_csv(
+		path, index=False, encoding=OUTPUT_ENCODING
+	)
+
+
+def write_outputs(source_rows, spatial_rows, dictionary, dict_conflicts):
+	write_csv(OUTPUT_SOURCE, source_rows, SOURCE_COLUMNS)
+	write_csv(OUTPUT_SPATIAL, spatial_rows, ["kgis_code", "village"])
 	with OUTPUT_DICT.open("w", encoding="utf-8") as file:
-		json.dump(saved, file, ensure_ascii=False, indent=2)
-
-	canonical_rows = []
-	for map_code in sorted(saved):
-		row = {"map_code": map_code}
-		for field in NAME_FIELDS:
-			row[field] = saved[map_code][field]
-		canonical_rows.append(row)
-
-	pd.DataFrame(canonical_rows, columns=["map_code"] + NAME_FIELDS).to_csv(
-		OUTPUT_KEY,
-		index=False,
-		encoding=OUTPUT_ENCODING,
+		json.dump(dictionary, file, ensure_ascii=False, indent=2)
+	canonical_rows = [
+		{"kgis_code": kgis_code, **values}
+		for kgis_code, values in dictionary.items()
+	]
+	write_csv(
+		OUTPUT_CANONICAL, canonical_rows,
+		["kgis_code"] + NAME_FIELDS,
 	)
-
-	pd.DataFrame(conflicts, columns=CONFLICT_COLUMNS).to_csv(
-		OUTPUT_CONFLICTS,
-		index=False,
-		encoding=OUTPUT_ENCODING,
-	)
-
-	return saved
-
+	write_csv(OUTPUT_DICT_CONFLICTS, dict_conflicts, DICT_CONFLICT_COLUMNS)
 
 # -----------------------------------------------------------------------
 # Run Script
@@ -329,26 +277,14 @@ def write_outputs(canonical, conflicts):
 
 if __name__ == "__main__":
 	input_files = read_input_files()
-
-	feature_count = export_spatial_base_attributes()
-	print(f"Features in spatial map: {feature_count:,}")
-	print(f"Attribute table saved: {OUTPUT_ATTRIBUTES.name}")
-
-	map_codes = read_map_codes()
-	print(f"Unique map codes: {len(map_codes):,}")
-
-	canonical, variants, source_codes, pair_villages = build_canonical_lookup(
-		input_files, map_codes
+	source_rows, variant_rows = build_source_lookup(input_files)
+	spatial_rows = build_spatial_lookup(SPATIAL_BASE_GPKG, SPATIAL_BASE_LAYER)
+	dictionary, dict_conflicts = build_canonical_lookup(
+		source_rows, variant_rows, spatial_rows
 	)
-	conflicts = build_conflict_report(
-		canonical, variants, source_codes, pair_villages, map_codes
-	)
-	saved = write_outputs(canonical, conflicts)
-
-	print(f"Input files: {len(input_files)}")
-	print(f"Canonical IDs saved: {len(saved):,}")
-	print(f"Map codes with no source match: {len(map_codes) - len(saved):,}")
-	print(f"Conflicts saved: {len(conflicts):,}")
-	print(f"Canonical dictionary: {OUTPUT_DICT.name}")
-	print(f"Canonical table: {OUTPUT_KEY.name}")
-	print(f"Conflict report: {OUTPUT_CONFLICTS.name}")
+	write_outputs(source_rows, spatial_rows, dictionary, dict_conflicts)
+	print(f"Input files: {len(input_files):,}")
+	print(f"Source lookup rows: {len(source_rows):,}")
+	print(f"Spatial lookup rows: {len(spatial_rows):,}")
+	print(f"Dictionary source codes: {len(dictionary):,}")
+	print(f"Dictionary conflicts: {len(dict_conflicts):,}")

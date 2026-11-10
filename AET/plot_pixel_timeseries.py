@@ -1,136 +1,94 @@
-import re
 import numpy as np
 import matplotlib.pyplot as plt
-import rasterio
-from datetime import datetime, timedelta
-from netCDF4 import Dataset
-from pathlib import Path
+import matplotlib.dates as mdates
+from matplotlib.collections import LineCollection
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+import watershed_operations
 
 # -----------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-VARIABLES = ["ETf", "ETf gapfilled"]
-YEARS = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
-RESOLUTION_LABEL = "750m" 
-SSEBOP_RESOLUTION_LABEL = "1000m"
-N_COLUMNS = 3
-
-# AET / ETf: daily GeoTIFFs in per-year folders. PET: one NetCDF file per year.
-VARIABLE_SETTINGS = {
-	"AET": (f"Watershed AET {RESOLUTION_LABEL}", f"watershed_bhuvan_AET_{RESOLUTION_LABEL}_*.tif", None, "tab:blue"),
-	"ETf": (f"Watershed ETf {RESOLUTION_LABEL}", f"watershed_ETf_{RESOLUTION_LABEL}_*.tif", None, "tab:green"),
-	"ETf gapfilled": (f"Watershed ETf {RESOLUTION_LABEL} - gapfilled", f"watershed_ETf_{RESOLUTION_LABEL}_*.tif", None, "tab:orange"),
-	"PET": ("Daily PET", "{year}_daily_pet_Badenhalli_subwatershed.nc", "pet", "tab:red"),
-	"SSEBop": ("Watershed AET SSEBop", f"watershed_ssebop_AET_{SSEBOP_RESOLUTION_LABEL}_*.tif", None, "tab:purple"),
-}
-VARIABLE_RESOLUTIONS = {"SSEBop": SSEBOP_RESOLUTION_LABEL, "ETf gapfilled": RESOLUTION_LABEL}
-DATE_PATTERN = re.compile(r"(\d{8})")
-VARIABLE_UNITS = {
-	"AET": "mm/day",
-	"ETf": "dim-less",
-	"ETf gapfilled": "dim-less",
-	"PET": "mm/day",
-	"SSEBop": "mm/day",
-}
-DEKAD_DAYS = 10
-NC_TIME_VARIABLE = "time"
-NODATA = -99999
+# Names: "AET 750m", "AET 5500m", "SSEBop 1000m", "SSEBop 30m", "ref ET ERA5", "ref ET agERA5"
+# Generated ETf folders are available as, e.g., "ETf Bhuvan ERA5 Land 5500m" or "ETf SSEBop ERA5 Land 1000m".
+# Gap-filled ETf: e.g., "ETf Bhuvan ERA5 Land gapfilled 750m" or "ETf SSEBop ERA5 Land gapfilled 30m".
+# Combine with + - * /, e.g. "SSEBop 30m/ref ET ERA5"
+VARIABLES = ["ETf SSEBop ERA5 Land 30m", "ETf SSEBop ERA5 Land gapfilled 30m"]
+YEARS = list(range(2015, 2017))
+N_COLUMNS = 2
 
 PIXEL_ALPHA = 0.1
-PIXEL_LINEWIDTH = 0.6
+PIXEL_LINEWIDTH = 0.35
+MAX_PIXEL_SERIES = 5000
 MEAN_LINEWIDTH = 2
 SD_ALPHA = 0.5
-SINGLE_MEAN_COLOR = "C0"
-SINGLE_SD_COLOR = "C1" 
-SUBPLOT_SIZE = (6, 3)  # width, height of each panel
+SINGLE_MEAN_COLOR = "crimson"  # single dataset: contrasts with the pixel traces
+SINGLE_SD_COLOR = "gold"
+SUBPLOT_SIZE = (5, 2.5)  # width, height of each panel
+COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
 # -----------------------------------------------------------------------
 # Functions
 # -----------------------------------------------------------------------
 
-def load_netcdf_series(variable, year):
-	"""Dates and cube (time, lat, lon) for the year from a yearly NetCDF file."""
-	folder, pattern, nc_variable, _ = VARIABLE_SETTINGS[variable]
-	with Dataset(SCRIPT_DIR / folder / pattern.format(year=year)) as ds:
-		time_var = ds[NC_TIME_VARIABLE]
-		origin = re.search(r"since (\d{4}-\d{2}-\d{2})", time_var.units)
-		if not origin:
-			raise ValueError(f"Unsupported time units: {time_var.units}")
-		start = datetime.strptime(origin.group(1), "%Y-%m-%d").date()
-		offsets = np.ma.filled(time_var[:], -1).astype(int)
-		dates = [start + timedelta(days=int(t)) for t in offsets]
-		keep = [i for i, d in enumerate(dates) if d.year == year]
-		data = np.ma.filled(ds[nc_variable][keep].astype(float), np.nan)
-	data[data == NODATA] = np.nan
-	return [dates[i] for i in keep], data
-
-
 def load_series(variable, year):
-	"""Dates and cube (time, row, col) for the year, nodata as NaN."""
-	folder, pattern, nc_variable, _ = VARIABLE_SETTINGS[variable]
-	if nc_variable:
-		return load_netcdf_series(variable, year)
-	resolution = VARIABLE_RESOLUTIONS.get(variable, RESOLUTION_LABEL)
-	year_dir = SCRIPT_DIR / folder / f"{year}_{resolution}"
-	dates, frames = [], []
-	for tif in sorted(year_dir.glob(pattern)):
-		match = DATE_PATTERN.search(tif.stem)
-		if not match:
-			continue
-		with rasterio.open(tif) as src:
-			frames.append(src.read(1).astype(float))
-		dates.append(datetime.strptime(match.group(1), "%Y%m%d").date())
-	data = np.array(frames)
-	data[data == NODATA] = np.nan
-	if variable == "SSEBop":
-		data = data / DEKAD_DAYS  # mm/dekad -> average mm/day
-	return dates, data
+	"""Return dates and a (time, row, column) cube for a dataset or expression."""
+	series = watershed_operations.resolve_request(variable, year)
+	return series.dates, series.values, series.units
 
 
-def draw_variable(ax, variable, year, show_pixels):
-	"""Draw one dataset's mean and ±1 std dev band (plus pixel lines if show_pixels); return pixel count."""
-	color = VARIABLE_SETTINGS[variable][3]
-	dates, data = load_series(variable, year)
+def draw_variable(ax, variable, year, color, show_pixels):
+	"""Draw a request's pixel traces when singular, then its mean and standard deviation."""
+	dates, data, units = load_series(variable, year)
 	series = data.reshape(len(dates), -1)
 	series = series[:, np.isfinite(series).any(axis=0)]
-	x = np.array(dates, dtype="datetime64[D]")
+	x = mdates.date2num(dates)
+	if show_pixels and series.shape[1]:
+		pixel_indexes = np.flatnonzero(np.isfinite(series).any(axis=0))
+		if len(pixel_indexes) > MAX_PIXEL_SERIES:
+			pixel_indexes = pixel_indexes[np.linspace(0, len(pixel_indexes) - 1, MAX_PIXEL_SERIES, dtype=int)]
+		segments = []
+		for pixel_index in pixel_indexes:
+			valid = np.isfinite(series[:, pixel_index])
+			if valid.sum() > 1:
+				segments.append(np.column_stack((x[valid], series[valid, pixel_index])))
+		if segments:
+			ax.add_collection(LineCollection(
+				segments, colors=color, alpha=PIXEL_ALPHA,
+				linewidths=PIXEL_LINEWIDTH, zorder=1,
+			), autolim=True)
+			ax.autoscale_view()
 
-	# Each pixel is drawn through its own valid observations only, so lines stay
-	# continuous across gaps (straight segments are display only, no values added)
-	if show_pixels:
-		for j in range(series.shape[1]):
-			valid = np.isfinite(series[:, j])
-			ax.plot(x[valid], series[valid, j], color=color, alpha=PIXEL_ALPHA,
-			        linewidth=PIXEL_LINEWIDTH, zorder=1)
-
-	# Days with a single valid pixel get mean = that value and std dev = 0
 	n_valid = np.isfinite(series).sum(axis=1)
 	has_data = n_valid > 0
-	xs, s = x[has_data], series[has_data]
-	mean = np.nanmean(s, axis=1)
-	std = np.where(n_valid[has_data] > 1, np.nanstd(s, axis=1, ddof=1), 0.0)
-	# Single dataset: raw pixels keep the dataset colour; mean and std dev get their own
+	mean = np.nansum(series[has_data], axis=1) / n_valid[has_data]
+	std = np.zeros(len(mean))
+	multiple_pixels = n_valid[has_data] > 1
+	if multiple_pixels.any():
+		std[multiple_pixels] = np.nanstd(series[has_data][multiple_pixels], axis=1, ddof=1)
+	xs = x[has_data]
 	mean_color = SINGLE_MEAN_COLOR if show_pixels else color
 	sd_color = SINGLE_SD_COLOR if show_pixels else color
-	ax.fill_between(xs, mean - std, mean + std, color=sd_color, alpha=SD_ALPHA, zorder=2,
-	                label="±1 std dev" if show_pixels else None)
-	ax.plot(xs, mean, color=mean_color, linewidth=MEAN_LINEWIDTH, zorder=3,
-	        label="Mean" if show_pixels else variable)
-	return series.shape[1]
+	ax.fill_between(xs, mean - std, mean + std, color=sd_color, alpha=SD_ALPHA, zorder=2)
+	ax.plot(xs, mean, color=mean_color, linewidth=MEAN_LINEWIDTH, zorder=3)
+	return series.shape[1], units
 
 
 def plot_year(ax, year):
-	"""All datasets share one y-axis."""
+	"""Overlay the requested datasets or expressions on one set of axes."""
 	show_pixels = len(VARIABLES) == 1
-	counts = [draw_variable(ax, variable, year, show_pixels) for variable in VARIABLES]
+	results = [
+		draw_variable(ax, variable, year, COLORS[index % len(COLORS)], show_pixels)
+		for index, variable in enumerate(VARIABLES)
+	]
 	ax.set_xlabel("Date")
-	units = {VARIABLE_UNITS[v] for v in VARIABLES}
-	ax.set_ylabel(units.pop() if len(units) == 1 else "mm/day")
-	label = ", ".join(f"{v}: {n} px" for v, n in zip(VARIABLES, counts))
-	ax.set_title(f"{year} ({label})")
-	ax.legend()
+	ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=6))
+	ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+	units = {unit for _, unit in results}
+	ax.set_ylabel(units.pop() if len(units) == 1 else "Value (mixed units)")
+	counts = ", ".join(f"{count} px" for count, _ in results)
+	ax.set_title(f"{year} ({counts})")
 
 
 def plot_years(years):
@@ -146,7 +104,18 @@ def plot_years(years):
 		plot_year(ax, year)
 	for ax in flat_axes[len(years):]:
 		ax.set_visible(False)
-	fig.tight_layout()
+	single = len(VARIABLES) == 1
+	handles = []
+	for index, variable in enumerate(VARIABLES):
+		color = COLORS[index % len(COLORS)]
+		handles.extend([
+			Line2D([0], [0], color=SINGLE_MEAN_COLOR if single else color, linewidth=MEAN_LINEWIDTH, label=f"{variable} mean"),
+			Patch(facecolor=SINGLE_SD_COLOR if single else color, alpha=SD_ALPHA, label=f"{variable} ±1 SD"),
+		])
+	if single:
+		handles.append(Line2D([0], [0], color=COLORS[0], alpha=PIXEL_ALPHA, label="Pixel series (sample)"))
+	fig.legend(handles=handles, loc="lower center", ncol=min(4, len(handles)), frameon=False)
+	fig.tight_layout(rect=(0, 0.08, 1, 1))
 	plt.show()
 
 

@@ -26,7 +26,6 @@ ALIAS_MAP = {
 	"extent": ["Extent"],
 	"crop_detail_local": ["Crop Detail", "Crop"],
 	"kgis_code": ["KGISCode"],
-	"site_code": ["site_code"],
 	"owner_name": ["Hissa Owner", "Owner"],
 	"owner_no": ["Owner No"],
 	"land_code": ["Hissa Land Code", "Land Code"],
@@ -49,7 +48,6 @@ OUTPUT_COLUMNS = [
 	"crop_detail_kannada",
 	"crop_category",
 	"kgis_code",
-	"site_code",
 	"village",
 	"district",
 	"taluk",
@@ -57,6 +55,32 @@ OUTPUT_COLUMNS = [
 	"owner_name",
 	"owner_no",
 	"land_code",
+]
+
+DUPLICATE_CONFLICT_COLUMNS = [
+	"season",
+	"year",
+	"source_file",
+	"kgis_code",
+	"survey_num",
+	"survey_detail",
+	"land_code",
+	"conflict_type",
+	"source_field",
+	"retained_source_row",
+	"duplicate_source_row",
+	"retained_value",
+	"duplicate_value",
+]
+
+SALIENT_SOURCE_FIELD_PRIORITY = [
+	"Hissa Extent",
+	"Crop Detail (English)",
+	"Crop Name (Standardised)",
+	"Crop Category",
+	"Agriculture Type",
+	"Harvested Area",
+	"Crop",
 ]
 
 
@@ -238,22 +262,19 @@ def clean_chunk(chunk, resolved_columns, year, location_maps, crop_maps):
 	cleaned_chunk["kgis_code"] = normalize_text_series(
 		chunk[resolved_columns["kgis_code"]]
 	).str.replace(r"\.0$", "", regex=True)
-	cleaned_chunk["site_code"] = normalize_text_series(
-		get_series_or_na(chunk, resolved_columns["site_code"])
-	).str.replace(r"\.0$", "", regex=True)
 
-	site_codes = cleaned_chunk["site_code"]
+	kgis_codes = cleaned_chunk["kgis_code"]
 	cleaned_chunk["village"] = normalize_mixed_case_text(
-		site_codes.map(location_maps["village"])
+		kgis_codes.map(location_maps["village"])
 	)
 	cleaned_chunk["district"] = normalize_mixed_case_text(
-		site_codes.map(location_maps["district"])
+		kgis_codes.map(location_maps["district"])
 	)
 	cleaned_chunk["taluk"] = normalize_mixed_case_text(
-		site_codes.map(location_maps["taluk"])
+		kgis_codes.map(location_maps["taluk"])
 	)
 	cleaned_chunk["hobli"] = normalize_mixed_case_text(
-		site_codes.map(location_maps["hobli"])
+		kgis_codes.map(location_maps["hobli"])
 	)
 
 	cleaned_chunk["owner_name"] = (
@@ -299,6 +320,40 @@ def deduplicate_output_file(output_file):
 	return removed
 
 
+def source_value(value):
+	if value is None or pd.isna(value):
+		return ""
+	return str(value)
+
+
+def build_duplicate_conflicts(source_chunk, cleaned_chunk, input_file, row_offset):
+	for position, output_values in enumerate(
+		cleaned_chunk.itertuples(index=False, name=None)
+	):
+		output_key = tuple(source_value(value) for value in output_values)
+		source_values = source_chunk.iloc[position].map(source_value).to_dict()
+		source_row_number = row_offset + position + 2
+		yield output_key, source_values, source_row_number
+
+
+def select_salient_difference(differences, resolved_columns):
+	if not differences:
+		return None
+	used_columns = {column for column in resolved_columns.values() if column is not None}
+	omitted_differences = [
+		field for field in differences if field not in used_columns
+	]
+	if omitted_differences:
+		for field in SALIENT_SOURCE_FIELD_PRIORITY:
+			if field in omitted_differences:
+				return field
+		return omitted_differences[0]
+	for field in SALIENT_SOURCE_FIELD_PRIORITY:
+		if field in differences:
+			return field
+	return differences[0]
+
+
 def process_input_file(input_file, location_maps, crop_maps):
 	year = extract_year_from_file_name(input_file)
 	output_file = OUTPUT_DIR / OUTPUT_TEMPLATE.format(year=year)
@@ -308,21 +363,18 @@ def process_input_file(input_file, location_maps, crop_maps):
 
 	column_lookup = get_column_lookup(input_file)
 	resolved_columns = resolve_columns(column_lookup)
-	selected_columns = [
-		column
-		for column in dict.fromkeys(resolved_columns.values())
-		if column is not None
-	]
-
 	total_rows_written = 0
 	write_header = True
 	chunk_count = 0
 	reader = pd.read_csv(
 		input_file,
-		usecols=selected_columns,
+		usecols=lambda column: normalize_header_name(column) != "site_code",
 		dtype="string",
 		chunksize=CHUNK_SIZE,
 	)
+	first_source_by_output = {}
+	duplicate_conflicts = []
+	duplicate_rows_detected = 0
 
 	print(f"Processing {input_file.name} -> {output_file.name}...")
 	for chunk in reader:
@@ -334,6 +386,52 @@ def process_input_file(input_file, location_maps, crop_maps):
 			location_maps,
 			crop_maps,
 		)
+		for output_key, source_values, source_row_number in build_duplicate_conflicts(
+			chunk, cleaned_chunk, input_file, total_rows_written
+		):
+			previous = first_source_by_output.get(output_key)
+			if previous is None:
+				first_source_by_output[output_key] = (
+					source_values, source_row_number
+				)
+				continue
+
+			duplicate_rows_detected += 1
+			previous_values, previous_row_number = previous
+			output_row = dict(zip(OUTPUT_COLUMNS, output_key))
+			differences = [
+				field for field in source_values
+				if source_values[field] != previous_values[field]
+			]
+			field = select_salient_difference(differences, resolved_columns)
+			used_columns = {
+				column for column in resolved_columns.values()
+				if column is not None
+			}
+			duplicate_conflicts.append({
+				"season": "summer",
+				"year": year,
+				"source_file": input_file.name,
+				"kgis_code": output_row["kgis_code"],
+				"survey_num": output_row["survey_num"],
+				"survey_detail": output_row["survey_detail"],
+				"land_code": output_row["land_code"],
+				"conflict_type": (
+					"identical source rows" if field is None
+					else "source field normalized or mapped to same cleaned value"
+					if field in used_columns
+					else "source field omitted from cleaned output"
+				),
+				"source_field": field,
+				"retained_source_row": previous_row_number,
+				"duplicate_source_row": source_row_number,
+				"retained_value": (
+					previous_values[field] if field is not None else ""
+				),
+				"duplicate_value": (
+					source_values[field] if field is not None else ""
+				),
+			})
 		cleaned_chunk.to_csv(
 			output_file,
 			mode="a",
@@ -355,7 +453,13 @@ def process_input_file(input_file, location_maps, crop_maps):
 			f"{input_rows:,} input rows vs {total_rows_written:,} written"
 		)
 	duplicates_removed = deduplicate_output_file(output_file)
-	return output_file, total_rows_written, duplicates_removed
+	if duplicates_removed != duplicate_rows_detected:
+		raise RuntimeError(
+			f"Duplicate conflict count mismatch for {input_file.name}: "
+			f"{duplicate_rows_detected:,} source conflicts vs "
+			f"{duplicates_removed:,} removed output rows"
+		)
+	return output_file, total_rows_written, duplicates_removed, duplicate_conflicts
 
 
 def build_summer_crop_reference_tables():
@@ -371,13 +475,23 @@ def build_summer_crop_reference_tables():
 	location_maps = build_location_maps(village_dict)
 	crop_maps = build_crop_maps(crop_dict)
 	written_outputs = []
+	all_duplicate_conflicts = []
 	for input_file in input_files:
-		output_file, rows_written, duplicates_removed = process_input_file(
+		output_file, rows_written, duplicates_removed, duplicate_conflicts = process_input_file(
 			input_file,
 			location_maps,
 			crop_maps,
 		)
 		written_outputs.append((output_file, rows_written, duplicates_removed))
+		all_duplicate_conflicts.extend(duplicate_conflicts)
+
+	duplicates_file = OUTPUT_DIR / "duplicate entries summer.csv"
+	if all_duplicate_conflicts:
+		pd.DataFrame(
+			all_duplicate_conflicts, columns=DUPLICATE_CONFLICT_COLUMNS
+		).to_csv(duplicates_file, index=False, encoding=OUTPUT_ENCODING)
+	elif duplicates_file.exists():
+		duplicates_file.unlink()
 
 	return written_outputs
 

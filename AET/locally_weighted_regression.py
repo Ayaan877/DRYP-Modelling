@@ -64,7 +64,7 @@ def fill_series(x, y, x_new, poly_order, n_neighbours, max_gap, clip_min, clip_m
 
 
 def lwr_interpolate(x, y, x_new=None, step=1, poly_order=2, n_neighbours=7,
-					max_gap=None, clip_min=None, clip_max=None):
+					max_gap=None, clip_min=None, clip_max=None, progress=None):
 	x = to_numbers(x)
 	y = np.asarray(y, dtype=np.float64)
 	if y.shape[0] != x.size:
@@ -82,4 +82,6 @@ def lwr_interpolate(x, y, x_new=None, step=1, poly_order=2, n_neighbours=7,
 	for j in range(flat.shape[1]):
 		if not np.isnan(flat[:, j]).all():
 			out[:, j] = fill_series(x, flat[:, j], x_new, poly_order, n_neighbours, max_gap, clip_min, clip_max)
+		if progress is not None:
+			progress(1)
 	return x_new, out.reshape((x_new.size,) + y.shape[1:])

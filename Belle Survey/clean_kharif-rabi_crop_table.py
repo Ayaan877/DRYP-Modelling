@@ -27,7 +27,6 @@ ALIAS_MAP = {
 	"extent": ["Extent"],
 	"crop_detail_kannada": ["Crop Detail"],
 	"kgis_code": ["KGISCode"],
-	"site_code": ["site_code"],
 	"owner_name": ["Owner"],
 	"owner_no": ["Owner No"],
 	"land_code": ["Land Code"],
@@ -44,7 +43,6 @@ OUTPUT_COLUMNS = [
 	"crop_detail_kannada",
 	"crop_category",
 	"kgis_code",
-	"site_code",
 	"village",
 	"district",
 	"taluk",
@@ -225,22 +223,19 @@ def clean_chunk(chunk, resolved_columns, location_maps, crop_maps):
 	cleaned_chunk["kgis_code"] = normalize_text_series(
 		chunk[resolved_columns["kgis_code"]]
 	).str.replace(r"\.0$", "", regex=True)
-	cleaned_chunk["site_code"] = normalize_text_series(
-		get_series_or_na(chunk, resolved_columns["site_code"])
-	).str.replace(r"\.0$", "", regex=True)
 
-	site_codes = cleaned_chunk["site_code"]
+	kgis_codes = cleaned_chunk["kgis_code"]
 	cleaned_chunk["village"] = normalize_text_series(
-		site_codes.map(location_maps["village"])
+		kgis_codes.map(location_maps["village"])
 	)
 	cleaned_chunk["district"] = normalize_text_series(
-		site_codes.map(location_maps["district"])
+		kgis_codes.map(location_maps["district"])
 	)
 	cleaned_chunk["taluk"] = normalize_text_series(
-		site_codes.map(location_maps["taluk"])
+		kgis_codes.map(location_maps["taluk"])
 	)
 	cleaned_chunk["hobli"] = normalize_text_series(
-		site_codes.map(location_maps["hobli"])
+		kgis_codes.map(location_maps["hobli"])
 	)
 
 	cleaned_chunk["owner_name"] = (
@@ -286,6 +281,18 @@ def deduplicate_output_file(output_file):
 		keep_default_na=False,
 		encoding=OUTPUT_ENCODING,
 	)
+	duplicates = cleaned.loc[cleaned.duplicated(keep="first")]
+	season_key = output_file.stem.replace("_crop_data_cleaned", "")
+	duplicates_file = output_file.with_name(
+		f"duplicate entries {season_key}.csv"
+	)
+	if duplicates.empty:
+		if duplicates_file.exists():
+			duplicates_file.unlink()
+	else:
+		duplicates.to_csv(
+			duplicates_file, index=False, encoding=OUTPUT_ENCODING
+		)
 	before = len(cleaned)
 	deduped = cleaned.drop_duplicates()
 	removed = before - len(deduped)
