@@ -15,8 +15,8 @@ import watershed_operations
 # Gap-filled ETf: e.g., "ETf Bhuvan ERA5 Land gapfilled 750m" or "ETf SSEBop ERA5 Land gapfilled 30m".
 # Combine with + - * /, e.g. "SSEBop 30m/ref ET ERA5"
 VARIABLES = ["ETf SSEBop ERA5 Land 30m", "ETf SSEBop ERA5 Land gapfilled 30m"]
-YEARS = list(range(2015, 2017))
-N_COLUMNS = 2
+YEARS = list(range(2015, 2016))
+N_COLUMNS = 1
 
 PIXEL_ALPHA = 0.1
 PIXEL_LINEWIDTH = 0.35

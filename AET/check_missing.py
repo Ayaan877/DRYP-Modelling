@@ -13,7 +13,7 @@ import watershed_data
 # Configuration
 # -----------------------------------------------------------------------
 
-DATASET = "ETf SSEBop ERA5 Land 30m"
+DATASET = "ETf Bhuvan ERA5 Land gapfilled 750m"
 START_DATE = dt.date(2015, 1, 1)
 END_DATE = dt.date(2025, 12, 31)
 

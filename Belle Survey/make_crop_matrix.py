@@ -8,10 +8,9 @@ import pandas as pd
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-CROP_MAP_DIR = SCRIPT_DIR / "Crop_Map_GPKGs"
+CROP_MAP_DIR = SCRIPT_DIR / "Crop_Map_Layers" / "Watershed Overlap Layers"
 TARGET_YEAR = 2022
-TARGET_SEASON = "kharif"
-ASSIGNMENT_LAYER = "crop_assignments"
+TARGET_SEASON = "rabi"
 OUTPUT_DIR = SCRIPT_DIR / "Crop_Matrices"
 
 EXCLUDED_CROP_NAMES = {"fallow land", "non-agricultural land"}
@@ -22,20 +21,29 @@ EXCLUDED_CROP_CATEGORIES = {"fallow / non-agricultural"}
 # -----------------------------------------------------------------------
 
 def build_input_path(year, season):
-	return CROP_MAP_DIR / f"{year}_{season}_belle_survey_crop_map.gpkg"
+	return CROP_MAP_DIR / f"watershed_fixed_{year}_{season}_belle_survey_crop_map.gpkg"
 
 
 def build_output_path(year, season):
-	return OUTPUT_DIR / f"{year}_{season}_crop_cooccurrence_matrix.csv"
+	return OUTPUT_DIR / f"watershed_fixed_{year}_{season}_crop_cooccurrence_matrix.csv"
 
 
-def load_assignments(gpkg_file, layer):
+def load_assignments(gpkg_file):
 	# GPKG files are SQLite databases; reading the attribute table directly skips geometry.
 	if not gpkg_file.exists():
 		raise FileNotFoundError(f"Missing crop map file: {gpkg_file}")
 	connection = sqlite3.connect(gpkg_file)
 	try:
-		query = f'SELECT spatial_fid, crop_name, crop_category FROM "{layer}"'
+		layers = pd.read_sql_query(
+			"SELECT table_name FROM gpkg_contents WHERE data_type = 'features'",
+			connection,
+		)["table_name"].tolist()
+		if len(layers) != 1:
+			raise ValueError(
+				f"Expected one feature layer in {gpkg_file.name}, found {len(layers)}"
+			)
+		layer = '"' + layers[0].replace('"', '""') + '"'
+		query = f"SELECT spatial_fid, crop_name, crop_category FROM {layer}"
 		return pd.read_sql_query(query, connection)
 	finally:
 		connection.close()
@@ -87,7 +95,7 @@ if __name__ == "__main__":
 	output_file = build_output_path(TARGET_YEAR, season)
 
 	print(f"Loading {input_file.name}...")
-	assignments = load_assignments(input_file, ASSIGNMENT_LAYER)
+	assignments = load_assignments(input_file)
 	assignments = filter_agricultural_crops(assignments)
 	if assignments.empty:
 		raise ValueError(f"No agricultural crop records found in {input_file.name}")

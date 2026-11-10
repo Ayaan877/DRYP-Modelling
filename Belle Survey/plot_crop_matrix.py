@@ -16,11 +16,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 MATRIX_DIR = SCRIPT_DIR / "Crop_Matrices"
 OUTPUT_DIR = SCRIPT_DIR / "Crop_Matrix_Plots"
 TARGET_YEAR = 2022
-TARGET_SEASON = "kharif"
+TARGET_SEASON = "rabi"
 
 HEATMAP_MIN_OCCURRENCES = 3   # crops with fewer total occurrences are dropped from the heatmap
 NETWORK_MIN_OCCURRENCES = 3   # crops with fewer total occurrences are dropped from the network
-NETWORK_MIN_EDGE_WEIGHT = 0   # co-occurrence counts below this are not drawn as links
+NETWORK_MIN_EDGE_WEIGHT = 3   # co-occurrence counts below this are not drawn as links
 NETWORK_LABEL_ALL_BELOW = 30  # label every node if the network has at most this many nodes
 NETWORK_TOP_LABELS = 20       # otherwise only label this many largest nodes
 NODE_SIZE = 350
@@ -32,7 +32,7 @@ DPI = 200
 # -----------------------------------------------------------------------
 
 def build_input_path(year, season):
-	return MATRIX_DIR / f"{year}_{season}_crop_cooccurrence_matrix.csv"
+	return MATRIX_DIR / f"watershed_fixed_{year}_{season}_crop_cooccurrence_matrix.csv"
 
 
 def load_matrix(path):
@@ -146,7 +146,7 @@ def cluster_layout(graph, communities):
 		coords = coords - coords.mean(axis=0)
 		scale = np.linalg.norm(coords, axis=1).max() or 1
 		for crop, xy in local.items():
-			layout[crop] = centres[idx] + (xy - np.array(list(local.values())).mean(axis=0)) / scale * radii[idx] * 0.85
+			layout[crop] = centres[idx] + (xy - np.array(list(local.values())).mean(axis=0)) / scale * radii[idx] * 0.98
 	circles = [(tuple(centres[i]), radii[i]) for i in range(len(communities))]
 	return layout, circles
 
