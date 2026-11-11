@@ -14,7 +14,7 @@ import watershed_operations
 # Generated ETf folders are available as, e.g., "ETf Bhuvan ERA5 Land 5500m" or "ETf SSEBop ERA5 Land 1000m".
 # Gap-filled ETf: e.g., "ETf Bhuvan ERA5 Land gapfilled 750m" or "ETf SSEBop ERA5 Land gapfilled 30m".
 # Combine with + - * /, e.g. "SSEBop 30m/ref ET ERA5"
-VARIABLES = ["ETf SSEBop ERA5 Land 30m", "ETf SSEBop ERA5 Land gapfilled 30m"]
+VARIABLES = ["ETf Bhuvan ERA5 Land 750m", "ETf Bhuvan ERA5 Land gapfilled spatial 750m", "ETf Bhuvan ERA5 Land gapfilled spatial 750m"]
 YEARS = list(range(2015, 2016))
 N_COLUMNS = 1
 

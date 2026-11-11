@@ -204,19 +204,28 @@ DATASETS = {
 def register_etf_datasets():
 	aet_configs = [config for config in DATASETS.values() if config.folder.startswith("Watershed AET ")]
 	for folder in sorted(ROOT.glob("Watershed ETf *")):
-		match = re.fullmatch(r"Watershed ETf (.+) (\d+(?:m|km))( - gapfilled|_gapfilled)?", folder.name)
+		match = re.fullmatch(
+			r"Watershed ETf (.+) (\d+(?:m|km))( - gapfilled|_gapfilled)?(_spatial)?",
+			folder.name,
+		)
 		if not folder.is_dir() or not match:
 			continue
-		sources, resolution, gapfilled = match.groups()
+		sources, resolution, gapfilled, spatial = match.groups()
+		if spatial and not gapfilled:
+			continue
 		cadence = 1
 		for config in aet_configs:
 			source = config.folder.removeprefix("Watershed AET ").removesuffix(f" {config.resolution}")
 			if config.resolution == resolution and sources.startswith(f"{source}-"):
 				cadence = config.cadence_days
 				break
-		if gapfilled:
+		if gapfilled or spatial:
 			cadence = 1
-		name = f"ETf {sources.replace('-', ' ')}{' gapfilled' if gapfilled else ''} {resolution}"
+		name = (
+			f"ETf {sources.replace('-', ' ')}"
+			f"{' gapfilled' if gapfilled else ''}"
+			f"{' spatial' if spatial else ''} {resolution}"
+		)
 		DATASETS.setdefault(name, DatasetInput(
 			"geotiff", folder.name, f"watershed_ETf_{resolution}_*.tif", "", "1", cadence, resolution,
 		))
