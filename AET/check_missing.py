@@ -13,7 +13,7 @@ import watershed_data
 # Configuration
 # -----------------------------------------------------------------------
 
-DATASET = "ETf Bhuvan ERA5 Land gapfilled spatial 750m" 
+DATASET = "ETf SSEBop ERA5 Land gapfilled spatial 30m" 
 START_DATE = dt.date(2015, 1, 1)
 END_DATE = dt.date(2025, 12, 31)
 
@@ -173,9 +173,9 @@ def run_missing_date_checker():
 
 	print(f"Dataset: {DATASET}")
 	print(f"Date range: {START_DATE} to {END_DATE}")
-	print(f"Missing date counts: {MISSING_DATES_OUTPUT}")
-	print(f"Missing pixels per day matrices: {MATRIX_OUTPUT}")
-	print(f"Missing values per pixel: {PER_PIXEL_OUTPUT}")
+	print(f"Missing date counts: {MISSING_DATES_OUTPUT.name}")
+	print(f"Missing pixels per day matrices: {MATRIX_OUTPUT.name}")
+	print(f"Missing values per pixel: {PER_PIXEL_OUTPUT.name}")
 
 
 if __name__ == "__main__":

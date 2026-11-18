@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from pathlib import Path
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
@@ -13,10 +14,15 @@ import watershed_operations
 # Names: "AET 750m", "AET 5500m", "SSEBop 1000m", "SSEBop 30m", "ref ET ERA5", "ref ET agERA5"
 # Generated ETf folders are available as, e.g., "ETf Bhuvan ERA5 Land 5500m" or "ETf SSEBop ERA5 Land 1000m".
 # Gap-filled ETf: e.g., "ETf Bhuvan ERA5 Land gapfilled 750m" or "ETf SSEBop ERA5 Land gapfilled 30m".
+# Hourly outputs: "Hourly AET 30m", "Hourly AET 250m", "Hourly PET", "Rainfed Hourly AET 250m",
+# or "Irrigation Hourly AET 250m".
+# Select one variable to show pixel traces.
 # Combine with + - * /, e.g. "SSEBop 30m/ref ET ERA5"
-VARIABLES = ["ETf Bhuvan ERA5 Land 750m", "ETf Bhuvan ERA5 Land gapfilled spatial 750m", "ETf Bhuvan ERA5 Land gapfilled spatial 750m"]
-YEARS = list(range(2015, 2016))
-N_COLUMNS = 1
+VARIABLES = ["Irrigation Hourly AET 250m"]
+YEARS = list(range(2015, 2025))
+N_COLUMNS = 3
+SAVE_PLOT = True
+SHOW_PIXEL_SERIES = False
 
 PIXEL_ALPHA = 0.1
 PIXEL_LINEWIDTH = 0.35
@@ -77,14 +83,15 @@ def draw_variable(ax, variable, year, color, show_pixels):
 
 def plot_year(ax, year):
 	"""Overlay the requested datasets or expressions on one set of axes."""
-	show_pixels = len(VARIABLES) == 1
+	show_pixels = SHOW_PIXEL_SERIES and len(VARIABLES) == 1
 	results = [
 		draw_variable(ax, variable, year, COLORS[index % len(COLORS)], show_pixels)
 		for index, variable in enumerate(VARIABLES)
 	]
 	ax.set_xlabel("Date")
-	ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=6))
-	ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+	date_locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
+	ax.xaxis.set_major_locator(date_locator)
+	ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(date_locator))
 	units = {unit for _, unit in results}
 	ax.set_ylabel(units.pop() if len(units) == 1 else "Value (mixed units)")
 	counts = ", ".join(f"{count} px" for count, _ in results)
@@ -112,11 +119,15 @@ def plot_years(years):
 			Line2D([0], [0], color=SINGLE_MEAN_COLOR if single else color, linewidth=MEAN_LINEWIDTH, label=f"{variable} mean"),
 			Patch(facecolor=SINGLE_SD_COLOR if single else color, alpha=SD_ALPHA, label=f"{variable} ±1 SD"),
 		])
-	if single:
+	if single and SHOW_PIXEL_SERIES:
 		handles.append(Line2D([0], [0], color=COLORS[0], alpha=PIXEL_ALPHA, label="Pixel series (sample)"))
 	fig.legend(handles=handles, loc="lower center", ncol=min(4, len(handles)), frameon=False)
 	fig.tight_layout(rect=(0, 0.08, 1, 1))
-	plt.show()
+	if SAVE_PLOT:
+		fig.savefig(Path(__file__).with_suffix(".png"), dpi=300, bbox_inches="tight")
+		plt.close(fig)
+	else:
+		plt.show()
 
 
 if __name__ == "__main__":
