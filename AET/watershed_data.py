@@ -210,6 +210,7 @@ DATASETS = {
 	"Hourly PET": DatasetInput("hourly_netcdf", "PET_hourly_converted", "{year}_hourly_converted_pet_Badenhalli_subwatershed.nc", "pet", "mm/hr", 1, "native", x_variable="longitude", y_variable="latitude", source_crs="EPSG:4326"),
 	"Rainfed Hourly AET 250m": DatasetInput("hourly_netcdf", "Watershed_rainfed_AET_hourly_250m", "rainfed_AET_hourly_{year}.nc", "aet", "mm/dt", 1, "250m", x_variable="x", y_variable="y"),
 	"Irrigation Hourly AET 250m": DatasetInput("hourly_netcdf", "Watershed irrigation AET hourly 250m", "irrigation_AET_hourly_250m_{year}.nc", "irr", "mm/hr", 1, "250m", x_variable="x", y_variable="y"),
+	"GW Abstraction Hourly 250m": DatasetInput("hourly_netcdf", "Watershed gw abstraction hourly 250m", "gw_abstraction_hourly_250m_{year}.nc", "gw_abs", "m3/hr", 1, "250m", x_variable="x", y_variable="y"),
 	"ETf 750m": DatasetInput("geotiff", "Watershed ETf Bhuvan-ERA5 750m", "watershed_ETf_750m_*.tif", "", "1", 1, "750m"),
 	"ETf gapfilled 750m": DatasetInput("geotiff", "Watershed ETf Bhuvan-ERA5 750m - gapfilled", "watershed_ETf_750m_*.tif", "", "1", 1, "750m"),
 	"ref ET agERA5": DatasetInput("netcdf", "Watershed ref ET agERA5 10km", "watershed_agERA5_refET_10km_{year}.nc", "refET", "mm/day", 1, "10km", source_crs="EPSG:32643"),

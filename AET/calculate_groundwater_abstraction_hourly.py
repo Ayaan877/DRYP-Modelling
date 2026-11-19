@@ -7,6 +7,7 @@ from netCDF4 import Dataset, num2date
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 from tqdm import tqdm
+from extract_watershed_rasters import make_watershed_mask, process_watershed_frame, read_watershed
 
 # -----------------------------------------------------------------------
 # Configuration
@@ -32,6 +33,7 @@ MM_TO_M = 0.001
 PIXEL_AREA_M2 = PIXEL_SIZE_M ** 2
 ABSTRACTION_FACTOR = 1.0 / 0.85
 OUTPUT_UNITS = "m3/hr"
+WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
 
 # -----------------------------------------------------------------------
 # Functions
@@ -185,9 +187,57 @@ def write_geotiff(
 		)
 
 
+def negative_abstraction_frame(frame: np.ndarray) -> np.ndarray:
+	values = np.asarray(frame, dtype=np.float32).copy()
+	finite = np.isfinite(values)
+	values[finite] = -np.abs(values[finite])
+	return values
+
+
+def fix_existing_outputs_negative() -> tuple[int, int, int]:
+	"""Make every finite nonzero value negative in existing GW output files."""
+	netcdf_count = 0
+	raster_count = 0
+	positive_count = 0
+	netcdf_files = sorted(OUTPUT_DIR.glob(f"{OUTPUT_PREFIX}_*.nc"))
+	if not netcdf_files:
+		raise FileNotFoundError(f"No GW abstraction yearly NetCDFs found in {OUTPUT_DIR}")
+
+	for netcdf_path in tqdm(netcdf_files, desc="Correcting GW NetCDFs", unit="year"):
+		try:
+			year = int(netcdf_path.stem.rsplit("_", 1)[1])
+		except (IndexError, ValueError) as error:
+			raise ValueError(f"Could not determine year from {netcdf_path.name}") from error
+		with Dataset(netcdf_path, "r+") as dataset:
+			if GW_ABSTRACTION_VARIABLE not in dataset.variables:
+				raise ValueError(f"{GW_ABSTRACTION_VARIABLE!r} was not found in {netcdf_path}")
+			abstraction = dataset.variables[GW_ABSTRACTION_VARIABLE]
+			for index in range(abstraction.shape[0]):
+				frame = np.ma.filled(abstraction[index, :, :], np.nan).astype(np.float32)
+				positive = np.isfinite(frame) & (frame > 0)
+				positive_count += int(np.count_nonzero(positive))
+				frame = negative_abstraction_frame(frame)
+				abstraction[index, :, :] = np.where(np.isfinite(frame), frame, NODATA)
+			netcdf_count += 1
+
+		year_folder = OUTPUT_DIR / f"{year}_250m"
+		raster_paths = sorted(year_folder.glob(f"{OUTPUT_PREFIX}_*.tif"))
+		for raster_path in tqdm(raster_paths, desc=f"Correcting GW {year}", unit="raster", leave=False):
+			with rasterio.open(raster_path, "r+") as raster:
+				frame = np.ma.filled(raster.read(1, masked=True), np.nan).astype(np.float32)
+				positive = np.isfinite(frame) & (frame > 0)
+				positive_count += int(np.count_nonzero(positive))
+				frame = negative_abstraction_frame(frame)
+				nodata = raster.nodata if raster.nodata is not None else NODATA
+				raster.write(np.where(np.isfinite(frame), frame, nodata).astype(np.float32), 1)
+			raster_count += 1
+	return netcdf_count, raster_count, positive_count
+
+
 def calculate_gw_abstraction_hourly() -> int:
 	"""Scale irrigation AET into hourly gw abstraction outputs."""
 	total_written = 0
+	geometries, watershed_crs = read_watershed(WATERSHED_FILE)
 	for year, input_path in tqdm(
 		input_year_files().items(), desc="Abstraction yearly files", unit="year"
 	):
@@ -201,6 +251,9 @@ def calculate_gw_abstraction_hourly() -> int:
 			units = OUTPUT_UNITS
 			height, width = len(y_values), len(x_values)
 			reverse_y = y_values[0] < y_values[-1]
+			inside_mask = make_watershed_mask(
+				(height, width), transform, crs, geometries, watershed_crs,
+			)
 			output_nc, output_abstraction = create_year_netcdf(
 				OUTPUT_DIR / f"{OUTPUT_PREFIX}_{year}.nc",
 				time_variable, x_values, y_values, transform, crs, units,
@@ -212,6 +265,8 @@ def calculate_gw_abstraction_hourly() -> int:
 					frame = np.ma.filled(irrigation_variable[index, :, :], np.nan).astype(np.float32)
 					frame[~np.isfinite(frame)] = np.nan
 					frame *= ABSTRACTION_FACTOR * PIXEL_AREA_M2 * MM_TO_M
+					frame = negative_abstraction_frame(frame)
+					frame = process_watershed_frame(frame, inside_mask)
 					output_abstraction[index] = np.where(np.isfinite(frame), frame, NODATA)
 					geotiff_frame = frame[::-1, :] if reverse_y else frame
 					stamp = timestamp.strftime("%Y%m%d%H")

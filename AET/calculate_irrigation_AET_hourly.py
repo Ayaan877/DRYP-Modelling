@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import rasterio
 from netCDF4 import Dataset, num2date
@@ -9,6 +8,7 @@ from rasterio.crs import CRS
 from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject
 from tqdm import tqdm
+from extract_watershed_rasters import make_watershed_mask, process_watershed_frame, read_watershed
 
 # -----------------------------------------------------------------------
 # Configuration
@@ -30,6 +30,7 @@ X_VARIABLE = "x"
 Y_VARIABLE = "y"
 CRS_VARIABLE = "crs"
 DEFAULT_CRS = "EPSG:32643"
+WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
 NODATA = -99999.0
 NETCDF_COMPRESSION_LEVEL = 4
 TIME_ORIGIN = datetime(2015, 1, 1)
@@ -219,6 +220,7 @@ def calculate_irrigation_aet_hourly() -> tuple[int, list[datetime]]:
 	"""Write satellite-minus-rainfed hourly AET, clamped to nonnegative values."""
 	total_written = 0
 	missing_timestamps: list[datetime] = []
+	geometries, watershed_crs = read_watershed(WATERSHED_FILE)
 	for year, (satellite_path, rainfed_path) in tqdm(
 		input_year_files().items(), desc="AET yearly files", unit="year"
 	):
@@ -247,6 +249,9 @@ def calculate_irrigation_aet_hourly() -> tuple[int, list[datetime]]:
 			if not (units == "mm/hr" and rainfed_units == "mm/dt"):
 				raise ValueError(f"Satellite and rainfed AET units do not match for {year}")
 			height, width = len(y_values), len(x_values)
+			inside_mask = make_watershed_mask(
+				(height, width), transform, crs, geometries, watershed_crs,
+			)
 			output_nc, output_irrigation = create_year_netcdf(
 				OUTPUT_DIR / f"{OUTPUT_PREFIX}_{year}.nc",
 				timestamps, transform, width, height, crs, units,
@@ -276,6 +281,7 @@ def calculate_irrigation_aet_hourly() -> tuple[int, list[datetime]]:
 						valid = np.isfinite(satellite_frame) & np.isfinite(rainfed_frame)
 						frame = np.full(satellite_frame.shape, np.nan, dtype=np.float32)
 						frame[valid] = np.maximum(satellite_frame[valid] - rainfed_frame[valid], 0)
+					frame = process_watershed_frame(frame, inside_mask)
 					stamp = timestamp.strftime("%Y%m%d%H")
 					write_geotiff(
 						OUTPUT_DIR / f"{year}_250m" / f"{OUTPUT_PREFIX}_{stamp}.tif",
@@ -297,7 +303,6 @@ if __name__ == "__main__":
 	print(f"Wrote {written} hourly irrigation AET GeoTIFFs and yearly NetCDFs to {OUTPUT_DIR}")
 	if missing_timestamps:
 		print("Timestamps without matching satellite/rainfed inputs (written as zero):")
-		for timestamp in missing_timestamps:
-			print(timestamp.strftime("%Y-%m-%d %H:%M"))
+		print(f"Number of missing timestamps: {len(missing_timestamps)}")
 	else:
 		print("No unmatched satellite/rainfed timestamps.")

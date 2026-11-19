@@ -14,7 +14,7 @@ import watershed_data
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ETF_DATASET = "ETf Bhuvan ERA5 Land 750m"
-TILE_SIZE = 64
+ROW_BAND_HEIGHT = 8  # full-width bands; a multiple of the GeoTIFF strip height so each block is written once
 OUTPUT_FILE_TEMPLATE = "watershed_ETf_{resolution}_{date}.tif"
 YEAR_DIR_TEMPLATE = "{year}_{resolution}"
 DATE_PATTERN = re.compile(r"_(\d{8})\.tif$")
@@ -92,8 +92,8 @@ def gapfill_dataset(dataset_name):
 	config = watershed_data.DATASETS[dataset_name]
 	if not dataset_name.startswith("ETf ") or config.kind != "geotiff":
 		raise ValueError(f"Expected a GeoTIFF ETf dataset, got {dataset_name!r}")
-	if TILE_SIZE <= 0:
-		raise ValueError("TILE_SIZE must be positive")
+	if ROW_BAND_HEIGHT <= 0:
+		raise ValueError("ROW_BAND_HEIGHT must be positive")
 	files = input_files(config)
 	days = np.array(sorted(files))
 	with rasterio.open(files[days[0]]) as src:
@@ -112,12 +112,10 @@ def gapfill_dataset(dataset_name):
 		output_paths[day] = year_dir / name
 
 	windows = [
-		Window.from_slices((row, min(row + TILE_SIZE, profile["height"])),
-						   (col, min(col + TILE_SIZE, profile["width"])))
-		for row in range(0, profile["height"], TILE_SIZE)
-		for col in range(0, profile["width"], TILE_SIZE)
+		Window.from_slices((row, min(row + ROW_BAND_HEIGHT, profile["height"])), (0, profile["width"]))
+		for row in range(0, profile["height"], ROW_BAND_HEIGHT)
 	]
-	for window_index, window in enumerate(tqdm(windows, desc="Gap-filling tiles", unit="tile")):
+	for window_index, window in enumerate(tqdm(windows, desc="Gap-filling row bands", unit="band")):
 		stack = load_stack(files, days, window, profile, config.nodata_values)
 		filled, all_days = interpolate_stack(stack, days, show_progress=True)
 		for index, day in enumerate(tqdm(all_days, desc="Writing daily rasters", unit="day", leave=False)):
