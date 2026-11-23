@@ -7,17 +7,17 @@ from netCDF4 import Dataset, num2date
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 from tqdm import tqdm
-from extract_watershed_rasters import make_watershed_mask, process_watershed_frame, read_watershed
 
 # -----------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-INPUT_DIR = SCRIPT_DIR / "Watershed irrigation AET hourly 250m"
-INPUT_PREFIX = "irrigation_AET_hourly_250m"
-OUTPUT_DIR = SCRIPT_DIR / "Watershed gw abstraction hourly 250m"
+VERSION = "v2"
+INPUT_NETCDF_FILE = SCRIPT_DIR / f"Watershed irrigation AET hourly 250m {VERSION}" / "irrigation_AET_hourly_250m_all_years.nc"
+OUTPUT_DIR = SCRIPT_DIR / f"Watershed gw abstraction hourly 250m {VERSION}"
 OUTPUT_PREFIX = "gw_abstraction_hourly_250m"
+COMBINED_NETCDF_FILE = OUTPUT_DIR / f"{OUTPUT_PREFIX}_all_years.nc"
 
 IRRIGATION_VARIABLE = "irr"
 GW_ABSTRACTION_VARIABLE = "gw_abs"
@@ -26,34 +26,17 @@ X_VARIABLE = "x"
 Y_VARIABLE = "y"
 CRS_VARIABLE = "crs"
 DEFAULT_CRS = "EPSG:32643"
-NODATA = -99999.0
+NODATA = -9999.0
 NETCDF_COMPRESSION_LEVEL = 4
 PIXEL_SIZE_M = 250
 MM_TO_M = 0.001
 PIXEL_AREA_M2 = PIXEL_SIZE_M ** 2
 ABSTRACTION_FACTOR = 1.0 / 0.85
 OUTPUT_UNITS = "m3/hr"
-WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
 
 # -----------------------------------------------------------------------
 # Functions
 # -----------------------------------------------------------------------
-
-
-def input_year_files() -> dict[int, Path]:
-	"""Index irrigation NetCDF files by year."""
-	files: dict[int, Path] = {}
-	for path in sorted(INPUT_DIR.glob(f"{INPUT_PREFIX}_*.nc")):
-		try:
-			year = int(path.stem.rsplit("_", 1)[1])
-		except (IndexError, ValueError) as error:
-			raise ValueError(f"Could not determine year from {path.name}") from error
-		if year in files:
-			raise ValueError(f"Duplicate irrigation NetCDF for {year}: {path}")
-		files[year] = path
-	if not files:
-		raise FileNotFoundError(f"No yearly irrigation NetCDFs found in {INPUT_DIR}")
-	return files
 
 
 def coordinate_spacing(values: np.ndarray, name: str) -> float:
@@ -118,12 +101,12 @@ def source_metadata(
 	return irrigation_variable, time_variable, x_values, y_values, transform, crs, timestamps
 
 
-def create_year_netcdf(
+def create_combined_netcdf(
 	path: Path,
-	input_time: Any,
+	time_template: Any,
+	time_values: np.ndarray,
 	input_x: np.ndarray,
 	input_y: np.ndarray,
-	transform: rasterio.Affine,
 	crs: CRS,
 	units: str,
 ) -> tuple[Dataset, Any]:
@@ -132,15 +115,15 @@ def create_year_netcdf(
 	output = Dataset(path, "w", format="NETCDF4")
 	output.Conventions = "CF-1.8"
 	output.title = "Hourly gw abstraction"
-	output.createDimension(TIME_VARIABLE, len(input_time))
+	output.createDimension(TIME_VARIABLE, len(time_values))
 	output.createDimension(Y_VARIABLE, height)
 	output.createDimension(X_VARIABLE, width)
 
 	time_var = output.createVariable(TIME_VARIABLE, "i8", (TIME_VARIABLE,))
-	time_var[:] = input_time[:]
-	time_var.units = input_time.units
-	time_var.calendar = getattr(input_time, "calendar", "standard")
-	time_var.standard_name = getattr(input_time, "standard_name", "time")
+	time_var[:] = time_values
+	time_var.units = time_template.units
+	time_var.calendar = getattr(time_template, "calendar", "standard")
+	time_var.standard_name = getattr(time_template, "standard_name", "time")
 	x_var = output.createVariable(X_VARIABLE, "f4", (X_VARIABLE,))
 	y_var = output.createVariable(Y_VARIABLE, "f4", (Y_VARIABLE,))
 	x_var[:] = input_x
@@ -196,87 +179,65 @@ def negative_abstraction_frame(frame: np.ndarray) -> np.ndarray:
 
 def fix_existing_outputs_negative() -> tuple[int, int, int]:
 	"""Make every finite nonzero value negative in existing GW output files."""
-	netcdf_count = 0
 	raster_count = 0
 	positive_count = 0
-	netcdf_files = sorted(OUTPUT_DIR.glob(f"{OUTPUT_PREFIX}_*.nc"))
-	if not netcdf_files:
-		raise FileNotFoundError(f"No GW abstraction yearly NetCDFs found in {OUTPUT_DIR}")
+	if not COMBINED_NETCDF_FILE.is_file():
+		raise FileNotFoundError(f"Combined GW abstraction NetCDF was not found: {COMBINED_NETCDF_FILE}")
 
-	for netcdf_path in tqdm(netcdf_files, desc="Correcting GW NetCDFs", unit="year"):
-		try:
-			year = int(netcdf_path.stem.rsplit("_", 1)[1])
-		except (IndexError, ValueError) as error:
-			raise ValueError(f"Could not determine year from {netcdf_path.name}") from error
-		with Dataset(netcdf_path, "r+") as dataset:
-			if GW_ABSTRACTION_VARIABLE not in dataset.variables:
-				raise ValueError(f"{GW_ABSTRACTION_VARIABLE!r} was not found in {netcdf_path}")
-			abstraction = dataset.variables[GW_ABSTRACTION_VARIABLE]
-			for index in range(abstraction.shape[0]):
-				frame = np.ma.filled(abstraction[index, :, :], np.nan).astype(np.float32)
-				positive = np.isfinite(frame) & (frame > 0)
-				positive_count += int(np.count_nonzero(positive))
-				frame = negative_abstraction_frame(frame)
-				abstraction[index, :, :] = np.where(np.isfinite(frame), frame, NODATA)
-			netcdf_count += 1
+	with Dataset(COMBINED_NETCDF_FILE, "r+") as dataset:
+		if GW_ABSTRACTION_VARIABLE not in dataset.variables:
+			raise ValueError(f"{GW_ABSTRACTION_VARIABLE!r} was not found in {COMBINED_NETCDF_FILE}")
+		abstraction = dataset.variables[GW_ABSTRACTION_VARIABLE]
+		for index in tqdm(range(abstraction.shape[0]), desc="Correcting GW NetCDF", unit="hour"):
+			frame = np.ma.filled(abstraction[index, :, :], np.nan).astype(np.float32)
+			positive = np.isfinite(frame) & (frame > 0)
+			positive_count += int(np.count_nonzero(positive))
+			frame = negative_abstraction_frame(frame)
+			abstraction[index, :, :] = np.where(np.isfinite(frame), frame, NODATA)
 
-		year_folder = OUTPUT_DIR / f"{year}_250m"
-		raster_paths = sorted(year_folder.glob(f"{OUTPUT_PREFIX}_*.tif"))
-		for raster_path in tqdm(raster_paths, desc=f"Correcting GW {year}", unit="raster", leave=False):
-			with rasterio.open(raster_path, "r+") as raster:
-				frame = np.ma.filled(raster.read(1, masked=True), np.nan).astype(np.float32)
-				positive = np.isfinite(frame) & (frame > 0)
-				positive_count += int(np.count_nonzero(positive))
-				frame = negative_abstraction_frame(frame)
-				nodata = raster.nodata if raster.nodata is not None else NODATA
-				raster.write(np.where(np.isfinite(frame), frame, nodata).astype(np.float32), 1)
-			raster_count += 1
-	return netcdf_count, raster_count, positive_count
+	raster_paths = sorted(OUTPUT_DIR.glob(f"*_250m/{OUTPUT_PREFIX}_*.tif"))
+	for raster_path in tqdm(raster_paths, desc="Correcting GW rasters", unit="raster"):
+		with rasterio.open(raster_path, "r+") as raster:
+			frame = np.ma.filled(raster.read(1, masked=True), np.nan).astype(np.float32)
+			positive = np.isfinite(frame) & (frame > 0)
+			positive_count += int(np.count_nonzero(positive))
+			frame = negative_abstraction_frame(frame)
+			nodata = raster.nodata if raster.nodata is not None else NODATA
+			raster.write(np.where(np.isfinite(frame), frame, nodata).astype(np.float32), 1)
+		raster_count += 1
+	return 1, raster_count, positive_count
 
 
 def calculate_gw_abstraction_hourly() -> int:
-	"""Scale irrigation AET into hourly gw abstraction outputs."""
+	"""Scale combined irrigation AET into hourly gw abstraction outputs."""
 	total_written = 0
-	geometries, watershed_crs = read_watershed(WATERSHED_FILE)
-	for year, input_path in tqdm(
-		input_year_files().items(), desc="Abstraction yearly files", unit="year"
-	):
-		with Dataset(input_path, "r") as source:
-			irrigation_variable, time_variable, x_values, y_values, transform, crs, timestamps = source_metadata(
-				source, input_path
-			)
-			input_units = str(getattr(irrigation_variable, "units", "mm/hr"))
-			if input_units != "mm/hr":
-				raise ValueError(f"Expected irrigation units of 'mm/hr', found {input_units!r} in {input_path}")
-			units = OUTPUT_UNITS
-			height, width = len(y_values), len(x_values)
-			reverse_y = y_values[0] < y_values[-1]
-			inside_mask = make_watershed_mask(
-				(height, width), transform, crs, geometries, watershed_crs,
-			)
-			output_nc, output_abstraction = create_year_netcdf(
-				OUTPUT_DIR / f"{OUTPUT_PREFIX}_{year}.nc",
-				time_variable, x_values, y_values, transform, crs, units,
-			)
-			try:
-				for index, timestamp in enumerate(tqdm(
-					timestamps, desc=f"Abstraction {year}", unit="hour", leave=False
-				)):
-					frame = np.ma.filled(irrigation_variable[index, :, :], np.nan).astype(np.float32)
-					frame[~np.isfinite(frame)] = np.nan
-					frame *= ABSTRACTION_FACTOR * PIXEL_AREA_M2 * MM_TO_M
-					frame = negative_abstraction_frame(frame)
-					frame = process_watershed_frame(frame, inside_mask)
-					output_abstraction[index] = np.where(np.isfinite(frame), frame, NODATA)
-					geotiff_frame = frame[::-1, :] if reverse_y else frame
-					stamp = timestamp.strftime("%Y%m%d%H")
-					write_geotiff(
-						OUTPUT_DIR / f"{year}_250m" / f"{OUTPUT_PREFIX}_{stamp}.tif",
-						geotiff_frame, transform, crs, units,
-					)
-					total_written += 1
-			finally:
-				output_nc.close()
+	with Dataset(INPUT_NETCDF_FILE, "r") as source:
+		irrigation_variable, time_variable, x_values, y_values, transform, crs, timestamps = source_metadata(
+			source, INPUT_NETCDF_FILE
+		)
+		input_units = str(getattr(irrigation_variable, "units", "mm/hr"))
+		if input_units != "mm/hr":
+			raise ValueError(f"Expected irrigation units of 'mm/hr', found {input_units!r}")
+		reverse_y = y_values[0] < y_values[-1]
+		output_nc, output_abstraction = create_combined_netcdf(
+			COMBINED_NETCDF_FILE, time_variable, np.asarray(time_variable[:]),
+			x_values, y_values, crs, OUTPUT_UNITS,
+		)
+		try:
+			for index, timestamp in enumerate(tqdm(timestamps, desc="Abstraction hours", unit="hour")):
+				frame = np.ma.filled(irrigation_variable[index, :, :], np.nan).astype(np.float32)
+				frame *= ABSTRACTION_FACTOR * PIXEL_AREA_M2 * MM_TO_M
+				frame = negative_abstraction_frame(frame)
+				output_abstraction[index] = np.where(np.isfinite(frame), frame, NODATA)
+				geotiff_frame = frame[::-1, :] if reverse_y else frame
+				stamp = timestamp.strftime("%Y%m%d%H")
+				write_geotiff(
+					OUTPUT_DIR / f"{timestamp.year}_250m" / f"{OUTPUT_PREFIX}_{stamp}.tif",
+					geotiff_frame, transform, crs, OUTPUT_UNITS,
+				)
+				total_written += 1
+		finally:
+			output_nc.close()
 	return total_written
 
 
@@ -287,6 +248,6 @@ def calculate_gw_abstraction_hourly() -> int:
 if __name__ == "__main__":
 	written = calculate_gw_abstraction_hourly()
 	print(
-		f"Wrote {written} hourly gw abstraction GeoTIFFs and yearly NetCDFs "
+		f"Wrote {written} hourly gw abstraction GeoTIFFs and combined NetCDF "
 		f"to {OUTPUT_DIR}"
 	)

@@ -1,5 +1,4 @@
 from pathlib import Path
-
 import fiona
 import numpy as np
 import rasterio
@@ -13,7 +12,8 @@ from tqdm import tqdm
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-INPUT_DIR = SCRIPT_DIR / "Watershed ETf SSEBop-ERA5 Land 30m_gapfilled_spatial"
+ETF_VERSION = "v2"
+INPUT_DIR = SCRIPT_DIR / f"Watershed ETf SSEBop-ERA5 Land 30m_gapfilled_spatial_{ETF_VERSION}"
 OUTPUT_DIR = INPUT_DIR / "watershed area"
 WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
 FILL_NODATA_ZERO = True

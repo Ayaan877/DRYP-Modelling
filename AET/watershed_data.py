@@ -1,4 +1,5 @@
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -16,7 +17,7 @@ DATE_PATTERN = re.compile(r"(\d{8})")
 
 @dataclass(frozen=True)
 class DatasetInput:
-	kind: Literal["netcdf", "hourly_netcdf", "daily_netcdf", "geotiff"]
+	kind: Literal["netcdf", "hourly_netcdf", "combined_netcdf", "daily_netcdf", "geotiff"]
 	folder: str
 	pattern: str
 	variable: str
@@ -32,7 +33,7 @@ class DatasetInput:
 
 @dataclass
 class DataSeries:
-	dates: list[date]
+	dates: Sequence[date]
 	values: np.ndarray
 	transform: rasterio.Affine
 	crs: CRS
@@ -50,10 +51,10 @@ def filled_float(values, nodata_values):
 	return data
 
 
-def dates_from_time(time_variable, preserve_time=False):
+def dates_from_time(time_variable, preserve_time=False, time_index=slice(None)):
 	calendar = getattr(time_variable, "calendar", "standard")
 	values = num2date(
-		time_variable[:],
+		time_variable[time_index],
 		units=time_variable.units,
 		calendar=calendar,
 		only_use_cftime_datetimes=False,
@@ -87,8 +88,8 @@ def grid_from_coordinates(x_values, y_values, values):
 	return values, from_origin(x[0] - dx / 2, y[0] + dy / 2, dx, dy)
 
 
-def netcdf_grid(dataset, config, preserve_time=False):
-	values = filled_float(dataset.variables[config.variable][:], config.nodata_values)
+def netcdf_grid(dataset, config, preserve_time=False, time_index=slice(None)):
+	values = filled_float(dataset.variables[config.variable][time_index], config.nodata_values)
 	if values.ndim == 2:
 		values = values[np.newaxis, :, :]
 	values *= config.scale
@@ -108,7 +109,7 @@ def netcdf_grid(dataset, config, preserve_time=False):
 			break
 	if crs is None:
 		raise ValueError(f"No CRS is configured or available in {dataset.filepath()}")
-	dates = dates_from_time(dataset.variables["time"], preserve_time=preserve_time)
+	dates = dates_from_time(dataset.variables["time"], preserve_time=preserve_time, time_index=time_index)
 	resolution_m = resolution_in_m(transform, crs)
 	return dates, values, transform, crs, resolution_m
 
@@ -137,6 +138,20 @@ def load_netcdf(path, config, year, preserve_time=False):
 		config.units,
 		config.cadence_days,
 	)
+
+
+def load_combined_netcdf(path, config, year):
+	with Dataset(path) as dataset:
+		all_dates = dates_from_time(dataset.variables["time"], preserve_time=True)
+		indices = [index for index, value in enumerate(all_dates) if value.year == year]
+		if not indices:
+			raise FileNotFoundError(f"No {year} observations found in {path}")
+		if indices[-1] - indices[0] + 1 != len(indices):
+			raise ValueError(f"{year} observations are not contiguous in {path}")
+		dates, values, transform, crs, resolution_m = netcdf_grid(
+			dataset, config, preserve_time=True, time_index=slice(indices[0], indices[-1] + 1)
+		)
+	return DataSeries(dates, values, transform, crs, resolution_m, config.units, config.cadence_days)
 
 
 def load_daily_netcdfs(path, config, year):
@@ -200,21 +215,24 @@ def load_geotiffs(path, config, year):
 
 ROOT = Path(__file__).resolve().parent
 
+# Names: <data> <source> <timescale> <resolution> [temporal|spatiotemporal] [version]; sources use "_" since "-" is an operator
 DATASETS = {
-	"AET 750m": DatasetInput("netcdf", "Watershed AET Bhuvan 750m", "watershed_bhuvan_AET_750m_{year}.nc", "aet", "mm/day", 1, "750m", source_crs="EPSG:32643"),
-	"AET 5500m": DatasetInput("netcdf", "Watershed AET Bhuvan 5500m", "watershed_bhuvan_AET_5500m_{year}.nc", "aet", "mm/day", 1, "5500m", source_crs="EPSG:32643"),
-	"SSEBop 1000m": DatasetInput("netcdf", "Watershed AET SSEBop 1000m", "watershed_ssebop_AET_1000m_{year}.nc", "aet", "mm/day", 10, "1000m", source_crs="EPSG:32643", scale=0.1),
-	"SSEBop 30m": DatasetInput("netcdf", "Watershed AET SSEBop 30m", "watershed_ssebop_AET_30m_{year}.nc", "aet", "mm/day", 1, "30m", source_crs="EPSG:32643"),
-	"Hourly AET 30m": DatasetInput("hourly_netcdf", "Watershed AET hourly 30m", "watershed_AET_hourly_30m_{year}.nc", "aet", "mm/hr", 1, "30m", x_variable="x", y_variable="y"),
-	"Hourly AET 250m": DatasetInput("hourly_netcdf", "Watershed AET hourly 250m", "watershed_AET_hourly_250m_{year}.nc", "aet", "mm/hr", 1, "250m", x_variable="x", y_variable="y"),
-	"Hourly PET": DatasetInput("hourly_netcdf", "PET_hourly_converted", "{year}_hourly_converted_pet_Badenhalli_subwatershed.nc", "pet", "mm/hr", 1, "native", x_variable="longitude", y_variable="latitude", source_crs="EPSG:4326"),
-	"Rainfed Hourly AET 250m": DatasetInput("hourly_netcdf", "Watershed_rainfed_AET_hourly_250m", "rainfed_AET_hourly_{year}.nc", "aet", "mm/dt", 1, "250m", x_variable="x", y_variable="y"),
-	"Irrigation Hourly AET 250m": DatasetInput("hourly_netcdf", "Watershed irrigation AET hourly 250m", "irrigation_AET_hourly_250m_{year}.nc", "irr", "mm/hr", 1, "250m", x_variable="x", y_variable="y"),
-	"GW Abstraction Hourly 250m": DatasetInput("hourly_netcdf", "Watershed gw abstraction hourly 250m", "gw_abstraction_hourly_250m_{year}.nc", "gw_abs", "m3/hr", 1, "250m", x_variable="x", y_variable="y"),
-	"ETf 750m": DatasetInput("geotiff", "Watershed ETf Bhuvan-ERA5 750m", "watershed_ETf_750m_*.tif", "", "1", 1, "750m"),
-	"ETf gapfilled 750m": DatasetInput("geotiff", "Watershed ETf Bhuvan-ERA5 750m - gapfilled", "watershed_ETf_750m_*.tif", "", "1", 1, "750m"),
-	"ref ET agERA5": DatasetInput("netcdf", "Watershed ref ET agERA5 10km", "watershed_agERA5_refET_10km_{year}.nc", "refET", "mm/day", 1, "10km", source_crs="EPSG:32643"),
-	"ref ET ERA5": DatasetInput("netcdf", "Watershed ref ET ERA5 Land 10km", "watershed_ERA5Land_refET_10km_{year}.nc", "refET", "mm/day", 1, "10km", source_crs="EPSG:32643"),
+	"AET bhuvan daily 750m": DatasetInput("netcdf", "Watershed AET Bhuvan 750m", "watershed_bhuvan_AET_750m_{year}.nc", "aet", "mm/day", 1, "750m", source_crs="EPSG:32643"),
+	"AET bhuvan daily 5500m": DatasetInput("netcdf", "Watershed AET Bhuvan 5500m", "watershed_bhuvan_AET_5500m_{year}.nc", "aet", "mm/day", 1, "5500m", source_crs="EPSG:32643"),
+	"AET ssebop dekadal 1000m": DatasetInput("netcdf", "Watershed AET SSEBop 1000m", "watershed_ssebop_AET_1000m_{year}.nc", "aet", "mm/day", 10, "1000m", source_crs="EPSG:32643", scale=0.1),
+	"AET ssebop daily 30m": DatasetInput("netcdf", "Watershed AET SSEBop 30m", "watershed_ssebop_AET_30m_{year}.nc", "aet", "mm/day", 1, "30m", source_crs="EPSG:32643"),
+	"AET ssebop_era5 hourly 30m v1": DatasetInput("hourly_netcdf", "Watershed AET hourly 30m", "watershed_AET_hourly_30m_{year}.nc", "aet", "mm/hr", 1, "30m", x_variable="x", y_variable="y"),
+	"AET ssebop_era5 hourly 30m v2": DatasetInput("combined_netcdf", "Watershed AET hourly 30m v2", "watershed_AET_hourly_v2_30m_all_years.nc", "aet_30m", "mm/hr", 1, "30m", x_variable="x_30m", y_variable="y_30m", source_crs="EPSG:32643"),
+	"AET ssebop_era5 hourly 250m v1": DatasetInput("hourly_netcdf", "Watershed AET hourly 250m", "watershed_AET_hourly_250m_{year}.nc", "aet", "mm/hr", 1, "250m", x_variable="x", y_variable="y"),
+	"AET ssebop_era5 hourly 250m v2": DatasetInput("combined_netcdf", "Watershed AET hourly 250m v2", "watershed_AET_hourly_v2_250m_all_years.nc", "aet_250m", "mm/hr", 1, "250m", x_variable="x_250m", y_variable="y_250m", source_crs="EPSG:32643"),
+	"AET rainfed hourly 250m v1": DatasetInput("hourly_netcdf", "Watershed_rainfed_AET_hourly_250m", "rainfed_AET_hourly_{year}.nc", "aet", "mm/dt", 1, "250m", x_variable="x", y_variable="y"),
+	"Irr ssebop_era5 hourly 250m v1": DatasetInput("hourly_netcdf", "Watershed irrigation AET hourly 250m", "irrigation_AET_hourly_250m_{year}.nc", "irr", "mm/hr", 1, "250m", x_variable="x", y_variable="y"),
+	"Irr ssebop_era5 hourly 250m v2": DatasetInput("combined_netcdf", "Watershed irrigation AET hourly 250m v2", "irrigation_AET_hourly_250m_all_years.nc", "irr", "mm/hr", 1, "250m", x_variable="x", y_variable="y"),
+	"GW ssebop_era5 hourly 250m v1": DatasetInput("hourly_netcdf", "Watershed gw abstraction hourly 250m", "gw_abstraction_hourly_250m_{year}.nc", "gw_abs", "m3/hr", 1, "250m", x_variable="x", y_variable="y"),
+	"GW ssebop_era5 hourly 250m v2": DatasetInput("combined_netcdf", "Watershed gw abstraction hourly 250m v2", "gw_abstraction_hourly_250m_all_years.nc", "gw_abs", "m3/hr", 1, "250m", x_variable="x", y_variable="y"),
+	"PET converted hourly native": DatasetInput("hourly_netcdf", "PET_hourly_converted", "{year}_hourly_converted_pet_Badenhalli_subwatershed.nc", "pet", "mm/hr", 1, "native", x_variable="longitude", y_variable="latitude", source_crs="EPSG:4326"),
+	"refET agera5 daily 10km": DatasetInput("netcdf", "Watershed ref ET agERA5 10km", "watershed_agERA5_refET_10km_{year}.nc", "refET", "mm/day", 1, "10km", source_crs="EPSG:32643"),
+	"refET era5 daily 10km": DatasetInput("netcdf", "Watershed ref ET ERA5 Land 10km", "watershed_ERA5Land_refET_10km_{year}.nc", "refET", "mm/day", 1, "10km", source_crs="EPSG:32643"),
 }
 
 
@@ -222,14 +240,15 @@ def register_etf_datasets():
 	aet_configs = [config for config in DATASETS.values() if config.folder.startswith("Watershed AET ")]
 	for folder in sorted(ROOT.glob("Watershed ETf *")):
 		match = re.fullmatch(
-			r"Watershed ETf (.+) (\d+(?:m|km))( - gapfilled|_gapfilled)?(_spatial)?",
+			r"Watershed ETf (.+) (\d+(?:m|km))(?:( - gapfilled|_gapfilled)(_v\d+)?)?(_spatial(_v\d+)?)?",
 			folder.name,
 		)
 		if not folder.is_dir() or not match:
 			continue
-		sources, resolution, gapfilled, spatial = match.groups()
+		sources, resolution, gapfilled, gapfilled_version, spatial, version = match.groups()
 		if spatial and not gapfilled:
 			continue
+		version = version or gapfilled_version
 		cadence = 1
 		for config in aet_configs:
 			source = config.folder.removeprefix("Watershed AET ").removesuffix(f" {config.resolution}")
@@ -238,10 +257,11 @@ def register_etf_datasets():
 				break
 		if gapfilled or spatial:
 			cadence = 1
-		name = (
-			f"ETf {sources.replace('-', ' ')}"
-			f"{' gapfilled' if gapfilled else ''}"
-			f"{' spatial' if spatial else ''} {resolution}"
+		source = sources.lower().replace(" land", "").replace("-", "_")
+		timescale = "dekadal" if cadence >= 10 else "daily"
+		gap_label = "spatiotemporal" if spatial else "temporal" if gapfilled else ""
+		name = " ".join(
+			part for part in (f"ETf {source}", timescale, resolution, gap_label, version.removeprefix("_") if version else "") if part
 		)
 		DATASETS.setdefault(name, DatasetInput(
 			"geotiff", folder.name, f"watershed_ETf_{resolution}_*.tif", "", "1", cadence, resolution,
@@ -260,6 +280,8 @@ def load_data(name, year):
 	path = folder / config.pattern.format(year=year)
 	if config.kind == "geotiff":
 		return load_geotiffs(folder, config, year)
+	if config.kind == "combined_netcdf":
+		return load_combined_netcdf(path, config, year)
 	if config.kind == "daily_netcdf":
 		return load_daily_netcdfs(path, config, year)
 	return load_netcdf(path, config, year, preserve_time=config.kind == "hourly_netcdf")

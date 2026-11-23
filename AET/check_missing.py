@@ -13,7 +13,8 @@ import watershed_data
 # Configuration
 # -----------------------------------------------------------------------
 
-DATASET = "ETf SSEBop ERA5 Land gapfilled spatial 30m" 
+DATASET_VERSION = "v2"
+DATASET = f"ETf ssebop_era5 daily 30m spatiotemporal {DATASET_VERSION}"
 START_DATE = dt.date(2015, 1, 1)
 END_DATE = dt.date(2025, 12, 31)
 

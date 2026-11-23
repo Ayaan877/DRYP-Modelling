@@ -9,11 +9,15 @@ import watershed_operations
 # Configuration
 # -----------------------------------------------------------------------
 
-# Names: "AET 750m", "AET 5500m", "SSEBop 1000m", "SSEBop 30m", "ETf 750m", "ETf gapfilled 750m",
-# "ref ET ERA5", "ref ET agERA5". Combine with + - * /, e.g. "SSEBop 30m/ref ET ERA5"
-# Generated ETf folders are available as, e.g., "ETf Bhuvan ERA5 Land 5500m" or "ETf SSEBop ERA5 Land 1000m".
-# Gap-filled ETf: e.g., "ETf Bhuvan ERA5 Land gapfilled 750m" or "ETf SSEBop ERA5 Land gapfilled 30m".
-VARIABLES = ["Irrigation Hourly AET 250m", "GW Abstraction Hourly 250m"]
+# Names: "<data> <source> <timescale> <resolution> [gapfilling] [version]"
+# data: AET, ETf, Irr, GW, PET, refET
+# source: bhuvan, ssebop, ssebop_era5, rainfed, bhuvan_era5, converted, agera5, era5
+# timescale: hourly, daily, dekadal
+# resolution: 30m, 250m, 750m, 1000m, 5500m, 10km, native
+# gapfilling: temporal, spatiotemporal (ETf only)
+# version: v1, v2 (hourly and gapfilled datasets only)
+# Combine with + - * /, e.g. "AET ssebop daily 30m/refET era5 daily 10km"
+VARIABLES = ["Irr ssebop_era5 hourly 250m v2", "GW ssebop_era5 hourly 250m v2"]
 YEARS = list(range(2015, 2025))
 N_COLUMNS = 3
 SAVE_PLOT = True

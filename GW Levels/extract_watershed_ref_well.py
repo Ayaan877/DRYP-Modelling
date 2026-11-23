@@ -7,7 +7,6 @@ import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 COMBINED_PATH = SCRIPT_DIR / "ABY-KWRIS-CGWB_Combined.csv"
-KWRIS_PATH = SCRIPT_DIR / "KWRIS_Table.csv"
 DATA_OUT_PATH = SCRIPT_DIR / "watershed_ref_well_data.csv"
 SUMMARY_OUT_PATH = SCRIPT_DIR / "watershed_ref_well_summary.csv"
 
@@ -52,15 +51,14 @@ SUMMARY_COLUMNS = [
 
 
 def read_csv(path: Path):
-	"""Read a CSV with every field as text, renaming the combined file's date columns."""
-	frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-	return frame.rename(columns={"reading date": "collection date", "reading time": "collection time"})
+	"""Read a CSV with every field as text."""
+	return pd.read_csv(path, dtype=str, keep_default_na=False)
 
 
-def select_wells(path: Path, well_ids):
-	"""Keep rows for the requested wells that have a numeric water level."""
+def select_wells(path: Path, well_ids, source: str):
+	"""Keep rows from one source for the requested wells that have a numeric water level."""
 	frame = read_csv(path)
-	frame = frame[frame["well ID"].isin(well_ids)]
+	frame = frame[(frame["source"] == source) & frame["well ID"].isin(well_ids)]
 	level = pd.to_numeric(frame["water level"], errors="coerce")
 	return frame[level.notna()]
 
@@ -68,20 +66,6 @@ def select_wells(path: Path, well_ids):
 def drop_positive_levels(frame: pd.DataFrame):
 	"""Keep only rows with a zero or negative water level."""
 	return frame[pd.to_numeric(frame["water level"]) <= 0]
-
-
-def negate_levels(frame: pd.DataFrame):
-	"""Flip the sign of water levels so they are negative depths."""
-	frame = frame.copy()
-	frame["water level"] = (-pd.to_numeric(frame["water level"])).map(lambda v: f"{v:g}")
-	return frame
-
-
-def drop_levels_below_depth(frame: pd.DataFrame):
-	"""Drop readings whose absolute value exceeds the well depth; keep rows with no depth."""
-	depth = pd.to_numeric(frame["well depth"], errors="coerce")
-	level = pd.to_numeric(frame["water level"]).abs()
-	return frame[~(level > depth)]
 
 
 def build_data(frames):
@@ -119,8 +103,8 @@ def build_summary(data: pd.DataFrame):
 
 
 def main():
-	cgwb_frame = drop_levels_below_depth(drop_positive_levels(select_wells(COMBINED_PATH, CGWB_WELL_IDS)))
-	kwris_frame = drop_levels_below_depth(negate_levels(select_wells(KWRIS_PATH, KWRIS_WELL_IDS)))
+	cgwb_frame = drop_positive_levels(select_wells(COMBINED_PATH, CGWB_WELL_IDS, "CGWB"))
+	kwris_frame = select_wells(COMBINED_PATH, KWRIS_WELL_IDS, "KWRIS")
 	data = build_data([cgwb_frame, kwris_frame])
 	summary = build_summary(data)
 	data.to_csv(DATA_OUT_PATH, index=False, encoding="utf-8")

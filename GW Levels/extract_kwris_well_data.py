@@ -8,8 +8,8 @@ import pdfplumber
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PDF_PATH = SCRIPT_DIR / "KWRIS_GW_Level_Report.pdf"
-OUT_PATH = SCRIPT_DIR / "KWRIS_Table.csv"
+PDF_PATH = SCRIPT_DIR / "Raw Data" / "KWRIS_GW_Level_Report.pdf"
+OUT_PATH = SCRIPT_DIR / "Raw Data" / "KWRIS_Table.csv"
 PAGE_INDICES = range(13, 30)
 
 MONTHS = {

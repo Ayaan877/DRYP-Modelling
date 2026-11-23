@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 from rasterio.windows import Window
 from tqdm import tqdm
-from locally_weighted_regression import fill_series, lwr_interpolate
+from locally_weighted_regression import lwr_interpolate
 import watershed_data
 
 # -----------------------------------------------------------------------
@@ -13,7 +13,8 @@ import watershed_data
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-ETF_DATASET = "ETf Bhuvan ERA5 Land 750m"
+DATASET_VERSION = "v2"
+ETF_DATASET = "ETf ssebop_era5 daily 30m"
 ROW_BAND_HEIGHT = 8  # full-width bands; a multiple of the GeoTIFF strip height so each block is written once
 OUTPUT_FILE_TEMPLATE = "watershed_ETf_{resolution}_{date}.tif"
 YEAR_DIR_TEMPLATE = "{year}_{resolution}"
@@ -21,11 +22,13 @@ DATE_PATTERN = re.compile(r"_(\d{8})\.tif$")
 NODATA = -99999
 
 POLY_ORDER = 2          # degree of the local polynomial
-N_NEIGHBOURS = 7        # nearest valid observations (in time) used per fit
-MAX_GAP_DAYS = 30       # gaps with more consecutive missing days are left as nodata
+N_NEIGHBOURS = 6        # nearest valid observations (in time) used per fit
+MAX_GAP_DAYS = 150       # gaps with more consecutive missing days are left as nodata
+BLEND_DAYS = 14          # fit error at each observation fades out over this many days (0 disables)
 CLIP_MIN = 0.0          # lower bound for interpolated ETf (None to disable)
 CLIP_MAX = None         # upper bound for interpolated ETf (None to disable)
 WRITE_OBSERVED_DATES = True  # also write dates that already have a raster (pixel-level nodata is filled)
+OUTPUT_YEARS = None  # e.g. range(2018, 2021) to write only those years; None writes all years
 
 # -----------------------------------------------------------------------
 # Functions
@@ -69,22 +72,8 @@ def interpolate_stack(stack, days, show_progress=False):
 		all_days, filled = lwr_interpolate(
 			days, stack, step=1, poly_order=POLY_ORDER, n_neighbours=N_NEIGHBOURS,
 			max_gap=MAX_GAP_DAYS + 1, clip_min=CLIP_MIN, clip_max=CLIP_MAX,
-			progress=progress.update if show_progress else None,
+			progress=progress.update if show_progress else None, blend_days=BLEND_DAYS,
 		)
-	observations = stack.reshape(len(days), -1)
-	output = filled.reshape(len(all_days), -1)
-	counts = np.isfinite(observations).sum(axis=0)
-	sparse_pixels = np.flatnonzero((counts >= 2) & (counts < POLY_ORDER + 1))
-	for pixel in tqdm(sparse_pixels, desc="Interpolating sparse pixels", unit="pixel",
-					  leave=False, disable=not show_progress or not len(sparse_pixels)):
-		output[:, pixel] = fill_series(
-			days.astype(np.float64), observations[:, pixel], all_days,
-			int(counts[pixel] - 1), N_NEIGHBOURS, MAX_GAP_DAYS + 1, CLIP_MIN, CLIP_MAX,
-		)
-	for index, day in enumerate(days):
-		output_index = int(day - all_days[0])
-		valid = np.isfinite(stack[index])
-		filled[output_index][valid] = stack[index][valid]
 	return filled, all_days
 
 
@@ -95,17 +84,23 @@ def gapfill_dataset(dataset_name):
 	if ROW_BAND_HEIGHT <= 0:
 		raise ValueError("ROW_BAND_HEIGHT must be positive")
 	files = input_files(config)
+	if OUTPUT_YEARS is not None:
+		files = {day: path for day, path in files.items() if date.fromordinal(day).year in OUTPUT_YEARS}
+		if not files:
+			raise FileNotFoundError(f"No ETf rasters in years {list(OUTPUT_YEARS)}")
 	days = np.array(sorted(files))
 	with rasterio.open(files[days[0]]) as src:
 		profile = dict(src.profile)
 	profile.update(dtype="float32", nodata=NODATA, compress="deflate", count=1)
-	output_dir = (SCRIPT_DIR / config.folder).with_name(f"{config.folder}_gapfilled")
+	output_dir = (SCRIPT_DIR / config.folder).with_name(f"{config.folder}_gapfilled_{DATASET_VERSION}")
 	observed = set(days.tolist())
 	output_paths = {}
 	for day in range(int(days[0]), int(days[-1]) + 1):
 		if day in observed and not WRITE_OBSERVED_DATES:
 			continue
 		current = date.fromordinal(day)
+		if OUTPUT_YEARS is not None and current.year not in OUTPUT_YEARS:
+			continue
 		year_dir = output_dir / YEAR_DIR_TEMPLATE.format(year=current.year, resolution=config.resolution)
 		year_dir.mkdir(parents=True, exist_ok=True)
 		name = OUTPUT_FILE_TEMPLATE.format(resolution=config.resolution, date=current.strftime("%Y%m%d"))

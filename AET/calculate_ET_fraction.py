@@ -10,8 +10,8 @@ import watershed_operations
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-AET_DATASET = "AET 5500m"
-REF_ET_DATASET = "ref ET ERA5"
+AET_DATASET = "AET bhuvan daily 5500m"
+REF_ET_DATASET = "refET era5 daily 10km"
 YEARS = range(2015, 2026)
 NODATA = -99999
 

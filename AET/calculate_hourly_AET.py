@@ -1,4 +1,5 @@
 import re
+from contextlib import ExitStack
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -6,9 +7,12 @@ import numpy as np
 import rasterio
 from netCDF4 import Dataset, num2date
 from rasterio.crs import CRS
-from rasterio.transform import array_bounds, from_origin
+from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject
+from scipy.sparse import csr_matrix, hstack
 from tqdm import tqdm
+
+from extract_watershed_rasters import make_watershed_mask, read_watershed
 
 # -----------------------------------------------------------------------
 # Configuration
@@ -23,18 +27,26 @@ PET_X_VARIABLE = "longitude"
 PET_Y_VARIABLE = "latitude"
 PET_SOURCE_CRS = "EPSG:4326"
 
-ETF_INPUT_DIR = SCRIPT_DIR / "Watershed ETf SSEBop-ERA5 Land 30m_gapfilled_spatial"
+ETF_VERSION = "v2"
+ETF_INPUT_DIR = SCRIPT_DIR / f"Watershed ETf SSEBop-ERA5 Land 30m_gapfilled_{ETF_VERSION}_spatial_{ETF_VERSION}"
 ETF_YEAR_FOLDER_PATTERN = "{year}_30m"
 ETF_FILE_PATTERN = "watershed_ETf_30m_*.tif"
 ETF_NODATA_VALUES = (-99999.0, -9999.0)
 ETF_RESOLUTION_LABEL = "30m"
 
 TARGET_RESOLUTION_M = 250
-TARGET_CRS: str | None = "EPSG:32643"
-OUTPUT_30M_DIR = SCRIPT_DIR / "Watershed AET hourly 30m"
-OUTPUT_TARGET_DIR = SCRIPT_DIR / f"Watershed AET hourly {TARGET_RESOLUTION_M}m"
-OUTPUT_30M_PREFIX = "watershed_AET_hourly"
-OUTPUT_TARGET_PREFIX = "watershed_AET_hourly"
+TARGET_CRS = "EPSG:32643"
+TARGET_WIDTH = 156
+TARGET_HEIGHT = 105
+TARGET_XLL = 798778.801047321060
+TARGET_YLL = 1484563.296254347777
+WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
+OUTPUT_30M_DIR = SCRIPT_DIR / f"Watershed AET hourly 30m {ETF_VERSION}"
+OUTPUT_TARGET_DIR = SCRIPT_DIR / f"Watershed AET hourly {TARGET_RESOLUTION_M}m {ETF_VERSION}"
+OUTPUT_30M_PREFIX = f"watershed_AET_hourly_{ETF_VERSION}"
+OUTPUT_TARGET_PREFIX = f"watershed_AET_hourly_{ETF_VERSION}"
+OUTPUT_30M_NETCDF = OUTPUT_30M_DIR / f"{OUTPUT_30M_PREFIX}_{ETF_RESOLUTION_LABEL}_all_years.nc"
+OUTPUT_TARGET_NETCDF = OUTPUT_TARGET_DIR / f"{OUTPUT_TARGET_PREFIX}_{TARGET_RESOLUTION_M}m_all_years.nc"
 
 NODATA = -99999.0
 NETCDF_COMPRESSION_LEVEL = 4
@@ -122,7 +134,7 @@ def pet_times(dataset: Dataset) -> list[datetime]:
 		for value in np.asarray(decoded, dtype=object).reshape(-1)]
 
 
-def read_etf(path: Path) -> tuple[np.ndarray, rasterio.Affine, CRS, dict[str, Any]]:
+def read_etf(path: Path) -> tuple[np.ndarray, rasterio.Affine, CRS]:
 	with rasterio.open(path) as source:
 		if source.crs is None:
 			raise ValueError(f"ETf raster has no CRS: {path}")
@@ -130,7 +142,7 @@ def read_etf(path: Path) -> tuple[np.ndarray, rasterio.Affine, CRS, dict[str, An
 		for nodata in ETF_NODATA_VALUES:
 			data[data == nodata] = np.nan
 		data[~np.isfinite(data)] = np.nan
-		return data, source.transform, source.crs, source.profile.copy()
+		return data, source.transform, source.crs
 
 
 def read_pet_frame(values: np.ndarray, index: int, nodata: float | None) -> np.ndarray:
@@ -165,75 +177,74 @@ def align_frame(
 	return aligned
 
 
-def target_grid(
-	pet_transform: rasterio.Affine,
-	pet_width: int,
-	pet_height: int,
-	pet_crs: CRS,
-) -> tuple[rasterio.Affine, int, int, CRS]:
-	"""Keep the PET grid when already at target size; otherwise align a new grid."""
-	target_crs = CRS.from_user_input(TARGET_CRS) if TARGET_CRS else pet_crs
-	if target_crs != pet_crs:
-		bounds = array_bounds(pet_height, pet_width, pet_transform)
-		from rasterio.warp import calculate_default_transform
-		transform, width, height = calculate_default_transform(
-			pet_crs, target_crs, pet_width, pet_height, *bounds,
-			resolution=TARGET_RESOLUTION_M,
-		)
-		if width is None or height is None:
-			raise ValueError("Could not determine the transformed PET grid dimensions")
-		return transform, width, height, target_crs
-	if not pet_crs.is_projected:
-		lat = pet_transform.f - abs(pet_transform.e) * pet_height / 2
-		meters_per_x = abs(pet_transform.a) * 111320 * np.cos(np.deg2rad(lat))
-		meters_per_y = abs(pet_transform.e) * 111320
-		pet_resolution = float(np.sqrt(meters_per_x * meters_per_y))
-	else:
-		pet_resolution = float(np.sqrt(abs(pet_transform.a * pet_transform.e)) * pet_crs.linear_units_factor[1])
-	if np.isclose(pet_resolution, TARGET_RESOLUTION_M, rtol=0.1):
-		return pet_transform, pet_width, pet_height, pet_crs
-	if not pet_crs.is_projected:
-		raise ValueError(
-			"A different target resolution requires a projected TARGET_CRS; "
-		"otherwise the native PET grid is retained."
-		)
-	meters_per_unit = pet_crs.linear_units_factor[1]
-	resolution = TARGET_RESOLUTION_M / meters_per_unit
-	left, bottom, right, top = array_bounds(pet_height, pet_width, pet_transform)
-	origin_x, origin_y = pet_transform.c, pet_transform.f
-	left = origin_x + np.floor((left - origin_x) / resolution) * resolution
-	right = origin_x + np.ceil((right - origin_x) / resolution) * resolution
-	top = origin_y - np.floor((origin_y - top) / resolution) * resolution
-	bottom = origin_y - np.ceil((origin_y - bottom) / resolution) * resolution
-	width = int(round((right - left) / resolution))
-	height = int(round((top - bottom) / resolution))
-	return from_origin(left, top, resolution, resolution), width, height, pet_crs
+def pet_resampling_weights(
+	source_shape: tuple[int, int], source_transform: rasterio.Affine, source_crs: CRS,
+	target_shape: tuple[int, int], target_transform: rasterio.Affine, target_crs: CRS,
+) -> tuple[csr_matrix, np.ndarray]:
+	weights = []
+	coverage = np.zeros(target_shape, dtype=bool)
+	for index in range(source_shape[0] * source_shape[1]):
+		basis = np.zeros(source_shape, dtype=np.float32)
+		basis.flat[index] = 1.0
+		warped = align_frame(basis, source_transform, source_crs, target_shape, target_transform, target_crs, Resampling.bilinear)
+		if index == 0:
+			coverage = np.isfinite(warped)
+		weights.append(csr_matrix(np.nan_to_num(warped, nan=0.0).reshape(-1, 1)))
+	return csr_matrix(hstack(weights, format="csr")), coverage
 
 
-def create_year_netcdf(
-	path: Path,
-	variable_name: str,
-	long_name: str,
-	year_times: list[datetime],
+def overlap_weights(source_count: int, source_origin: float, source_step: float,
+	target_count: int, target_origin: float, target_step: float) -> csr_matrix:
+	rows, columns, weights = [], [], []
+	for target_index in range(target_count):
+		start = target_origin + target_index * target_step
+		end = start + target_step
+		low, high = sorted((start, end))
+		first = max(0, int(np.floor(min((low - source_origin) / source_step, (high - source_origin) / source_step))))
+		last = min(source_count, int(np.ceil(max((low - source_origin) / source_step, (high - source_origin) / source_step))))
+		for source_index in range(first, last):
+			source_start = source_origin + source_index * source_step
+			source_end = source_start + source_step
+			source_low, source_high = sorted((source_start, source_end))
+			overlap = min(high, source_high) - max(low, source_low)
+			if overlap > 0:
+				rows.append(target_index)
+				columns.append(source_index)
+				weights.append(overlap)
+	return csr_matrix((weights, (rows, columns)), shape=(target_count, source_count), dtype=np.float64)
+
+
+def aggregation_weights(source_shape: tuple[int, int], source_transform: rasterio.Affine,
+	source_crs: CRS, target_transform: rasterio.Affine, target_crs: CRS) -> tuple[csr_matrix, csr_matrix]:
+	if source_crs != target_crs or source_transform.b != 0 or source_transform.d != 0 or source_transform.a <= 0 or source_transform.e >= 0:
+		raise ValueError("ETf and target grids must share a CRS and use north-up, unrotated pixels")
+	rows = overlap_weights(source_shape[0], source_transform.f, source_transform.e, TARGET_HEIGHT, target_transform.f, target_transform.e)
+	columns = overlap_weights(source_shape[1], source_transform.c, source_transform.a, TARGET_WIDTH, target_transform.c, target_transform.a)
+	return rows, columns
+
+
+def aggregate_frame(frame: np.ndarray, rows: csr_matrix, columns: csr_matrix) -> np.ndarray:
+	valid = np.isfinite(frame)
+	totals = (columns @ (rows @ np.where(valid, frame, 0.0)).T).T
+	areas = (columns @ (rows @ valid.astype(np.float32)).T).T
+	result = np.full(totals.shape, np.nan, dtype=np.float32)
+	np.divide(totals, areas, out=result, where=areas > 0)
+	return result
+
+
+def create_grid_variable(
+	output: Dataset,
+	label: str,
 	transform: rasterio.Affine,
 	width: int,
 	height: int,
 	crs: CRS,
-) -> tuple[Dataset, Any]:
-	path.parent.mkdir(parents=True, exist_ok=True)
-	output = Dataset(path, "w", format="NETCDF4")
-	output.Conventions = "CF-1.8"
-	output.title = long_name
-	output.createDimension("time", len(year_times))
-	output.createDimension("y", height)
-	output.createDimension("x", width)
-	time_var = output.createVariable("time", "i8", ("time",))
-	time_var.units = f"hours since {TIME_ORIGIN:%Y-%m-%d %H:%M:%S}"
-	time_var.calendar = "gregorian"
-	time_var.standard_name = "time"
-	time_var[:] = [(value - TIME_ORIGIN).total_seconds() / 3600 for value in year_times]
-	x_var = output.createVariable("x", "f4", ("x",))
-	y_var = output.createVariable("y", "f4", ("y",))
+) -> Any:
+	x_name, y_name, crs_name = f"x_{label}", f"y_{label}", f"crs_{label}"
+	output.createDimension(y_name, height)
+	output.createDimension(x_name, width)
+	x_var = output.createVariable(x_name, "f8", (x_name,))
+	y_var = output.createVariable(y_name, "f8", (y_name,))
 	x_var[:] = transform.c + (np.arange(width) + 0.5) * transform.a
 	y_var[:] = transform.f + (np.arange(height) + 0.5) * transform.e
 	x_var.axis = "X"
@@ -242,18 +253,39 @@ def create_year_netcdf(
 	y_var.standard_name = "projection_y_coordinate"
 	x_var.units = "m" if crs.is_projected else "degrees_east"
 	y_var.units = "m" if crs.is_projected else "degrees_north"
-	crs_var = output.createVariable("crs", "i4")
+	crs_var = output.createVariable(crs_name, "i4")
 	crs_var.spatial_ref = crs.to_wkt()
 	crs_var.crs_wkt = crs.to_wkt()
 	data_var = output.createVariable(
-		variable_name, "f4", ("time", "y", "x"), zlib=True,
+		f"aet_{label}", "f4", ("time", y_name, x_name), zlib=True,
 		complevel=NETCDF_COMPRESSION_LEVEL, chunksizes=(1, height, width),
 		fill_value=NODATA,
 	)
 	data_var.units = "mm/hr"
-	data_var.long_name = long_name
-	data_var.grid_mapping = "crs"
-	return output, data_var
+	data_var.long_name = f"Hourly actual evapotranspiration at {label}"
+	data_var.grid_mapping = crs_name
+	return data_var
+
+
+def create_netcdf(
+	path: Path,
+	label: str,
+	transform: rasterio.Affine,
+	width: int,
+	height: int,
+	crs: CRS,
+) -> tuple[Dataset, Any, Any]:
+	path.parent.mkdir(parents=True, exist_ok=True)
+	output = Dataset(path, "w", format="NETCDF4")
+	output.Conventions = "CF-1.8"
+	output.title = f"Hourly actual evapotranspiration at {label}"
+	output.createDimension("time", None)
+	time_var = output.createVariable("time", "f8", ("time",))
+	time_var.units = f"hours since {TIME_ORIGIN:%Y-%m-%d %H:%M:%S}"
+	time_var.calendar = "gregorian"
+	time_var.standard_name = "time"
+	data_var = create_grid_variable(output, label, transform, width, height, crs)
+	return output, data_var, time_var
 
 
 def write_frame(path: Path, frame: np.ndarray, transform: rasterio.Affine, crs: CRS) -> None:
@@ -271,88 +303,98 @@ def write_frame(path: Path, frame: np.ndarray, transform: rasterio.Affine, crs: 
 
 def calculate_hourly_aet() -> tuple[int, int]:
 	"""Multiply every hourly PET slice by its matching daily spatially-filled ETf."""
+	print(f"Step 1/3: indexing daily ETf rasters in {ETF_INPUT_DIR.name}")
 	etf_by_date = input_etf_files()
+	print(f"  {len(etf_by_date)} ETf days found")
+	print(f"Step 2/3: listing PET yearly files in {PET_INPUT_DIR.name}")
 	pet_files = sorted(PET_INPUT_DIR.glob(PET_FILE_PATTERN))
 	if not pet_files:
 		raise FileNotFoundError(f"No hourly PET NetCDF files found in {PET_INPUT_DIR}")
-	count_30m = 0
-	count_target = 0
+	print(f"  {len(pet_files)} PET files found")
+	print("Step 3/3: reading watershed and building 250 m target mask")
+	geometries, watershed_crs = read_watershed(WATERSHED_FILE)
+	target_crs = CRS.from_user_input(TARGET_CRS)
+	target_transform = from_origin(TARGET_XLL, TARGET_YLL + TARGET_HEIGHT * TARGET_RESOLUTION_M, TARGET_RESOLUTION_M, TARGET_RESOLUTION_M)
+	target_mask = make_watershed_mask((TARGET_HEIGHT, TARGET_WIDTH), target_transform, target_crs, geometries, watershed_crs)
+	count = 0
 	etf_grid: tuple[rasterio.Affine, CRS, tuple[int, int]] | None = None
-
-	for pet_path in tqdm(pet_files, desc="PET yearly files", unit="file"):
-		with Dataset(pet_path, "r") as pet_dataset:
-			if PET_VARIABLE not in pet_dataset.variables or PET_TIME_VARIABLE not in pet_dataset.variables:
-				raise ValueError(f"Configured PET/time variable missing from {pet_path}")
-			pet_variable = pet_dataset.variables[PET_VARIABLE]
-			pet_values, pet_transform, pet_crs, _, _ = netcdf_grid(pet_dataset, pet_variable[:])
-			timestamps = pet_times(pet_dataset)
-			if len(timestamps) != pet_values.shape[0]:
-				raise ValueError(f"PET time/data length mismatch in {pet_path}")
-			eligible = [index for index, timestamp in enumerate(timestamps) if timestamp.date() in etf_by_date]
-			if not eligible:
-				continue
-			selected_times = [timestamps[index] for index in eligible]
-			year = selected_times[0].year
-			if any(value.year != year for value in selected_times):
-				raise ValueError(f"PET file contains matching timestamps from multiple years: {pet_path}")
-			first_etf, etf_transform, etf_crs, etf_profile = read_etf(etf_by_date[selected_times[0].date()])
-			current_grid = (etf_transform, etf_crs, first_etf.shape)
-			if etf_grid is None:
-				etf_grid = current_grid
-			elif current_grid != etf_grid:
-				raise ValueError(f"ETf rasters do not share one grid: {etf_by_date[selected_times[0].date()]}")
-			pet_target_transform, pet_target_width, pet_target_height, pet_target_crs = target_grid(
-				pet_transform, pet_values.shape[2], pet_values.shape[1], pet_crs
-			)
-			out_30_dir = OUTPUT_30M_DIR / f"{year}_{ETF_RESOLUTION_LABEL}"
-			out_target_dir = OUTPUT_TARGET_DIR / f"{year}_{TARGET_RESOLUTION_M}m"
-			out_30_nc, out_30_var = create_year_netcdf(
-				OUTPUT_30M_DIR / f"{OUTPUT_30M_PREFIX}_{ETF_RESOLUTION_LABEL}_{year}.nc",
-				"aet", "Hourly actual evapotranspiration at 30 m", selected_times,
-				etf_transform, first_etf.shape[1], first_etf.shape[0], etf_crs,
-			)
-			out_target_nc, out_target_var = create_year_netcdf(
-				OUTPUT_TARGET_DIR / f"{OUTPUT_TARGET_PREFIX}_{TARGET_RESOLUTION_M}m_{year}.nc",
-				"aet", f"Hourly actual evapotranspiration at {TARGET_RESOLUTION_M} m",
-				selected_times, pet_target_transform, pet_target_width, pet_target_height, pet_target_crs,
-			)
-			try:
-				for output_index, pet_index in enumerate(tqdm(eligible, desc=f"AET {year}", unit="hour", leave=False)):
+	pet_grid = None
+	cached_day = None
+	previous_time = None
+	etf_mask = None
+	pet_coverage = None
+	with ExitStack() as outputs:
+		for pet_path in tqdm(pet_files, desc="PET years", unit="file"):
+			with Dataset(pet_path, "r") as pet_dataset:
+				if PET_VARIABLE not in pet_dataset.variables or PET_TIME_VARIABLE not in pet_dataset.variables:
+					raise ValueError(f"Configured PET/time variable missing from {pet_path}")
+				pet_variable = pet_dataset.variables[PET_VARIABLE]
+				pet_values, pet_transform, pet_crs, _, _ = netcdf_grid(pet_dataset, pet_variable[:])
+				timestamps = pet_times(pet_dataset)
+				if len(timestamps) != pet_values.shape[0]:
+					raise ValueError(f"PET time/data length mismatch in {pet_path}")
+				eligible = [index for index, timestamp in enumerate(timestamps) if timestamp.date() in etf_by_date]
+				if not eligible:
+					tqdm.write(f"Skipping {pet_path.name}: no hours with a matching ETf day")
+					continue
+				year = timestamps[eligible[0]].year
+				tqdm.write(f"{pet_path.name}: computing {len(eligible)} hours of {year}")
+				for pet_index in tqdm(eligible, desc=f"Hourly AET {year}", unit="hour", leave=False):
 					timestamp = timestamps[pet_index]
+					if timestamp.minute or timestamp.second or timestamp.microsecond or (previous_time is not None and timestamp <= previous_time):
+						raise ValueError(f"PET timestamps must be unique, hourly, and increasing: {timestamp} in {pet_path}")
 					etf_path = etf_by_date[timestamp.date()]
-					if timestamp.date() == selected_times[0].date():
-						etf_frame = first_etf
-					else:
-						etf_frame, current_transform, current_crs, _ = read_etf(etf_path)
-						if current_transform != etf_transform or current_crs != etf_crs or etf_frame.shape != first_etf.shape:
+					if timestamp.date() != cached_day:
+						etf_frame, etf_transform, etf_crs = read_etf(etf_path)
+						current_grid = (etf_transform, etf_crs, etf_frame.shape)
+						if etf_grid is None:
+							etf_grid = current_grid
+							etf_mask = make_watershed_mask(etf_frame.shape, etf_transform, etf_crs, geometries, watershed_crs)
+							row_weights, column_weights = aggregation_weights(etf_frame.shape, etf_transform, etf_crs, target_transform, target_crs)
+							tqdm.write(f"  Creating output NetCDFs: {OUTPUT_30M_NETCDF.name}, {OUTPUT_TARGET_NETCDF.name}")
+							out_30_nc, out_30_var, out_30_time = create_netcdf(
+								OUTPUT_30M_NETCDF, ETF_RESOLUTION_LABEL, etf_transform, etf_frame.shape[1], etf_frame.shape[0], etf_crs,
+							)
+							out_target_nc, out_target_var, out_target_time = create_netcdf(
+								OUTPUT_TARGET_NETCDF, f"{TARGET_RESOLUTION_M}m", target_transform, TARGET_WIDTH, TARGET_HEIGHT, target_crs,
+							)
+							outputs.enter_context(out_30_nc)
+							outputs.enter_context(out_target_nc)
+						elif current_grid != etf_grid:
 							raise ValueError(f"ETf rasters do not share one grid: {etf_path}")
+						assert etf_mask is not None
+						etf_frame[~etf_mask] = np.nan
+						cached_day = timestamp.date()
+					current_pet_grid = (pet_values.shape[1:], pet_transform, pet_crs)
+					if current_pet_grid != pet_grid:
+						tqdm.write("  Building PET-to-30 m resampling weights (once per PET grid)")
+						pet_weights, pet_coverage = pet_resampling_weights(
+							pet_values.shape[1:], pet_transform, pet_crs, etf_frame.shape, etf_transform, etf_crs,
+						)
+						pet_grid = current_pet_grid
 					pet_frame = read_pet_frame(pet_values, pet_index, getattr(pet_variable, "_FillValue", None))
-					pet_30m = align_frame(
-						pet_frame, pet_transform, pet_crs, first_etf.shape,
-						etf_transform, etf_crs, Resampling.bilinear,
-					)
+					if np.isfinite(pet_frame).all():
+						pet_30m = np.asarray(pet_weights @ pet_frame.ravel()).reshape(etf_frame.shape)
+						assert pet_coverage is not None
+						pet_30m[~pet_coverage] = np.nan
+					else:
+						pet_30m = align_frame(pet_frame, pet_transform, pet_crs, etf_frame.shape, etf_transform, etf_crs, Resampling.bilinear)
 					with np.errstate(invalid="ignore", over="ignore"):
 						aet_30m = (pet_30m * etf_frame).astype(np.float32)
 					aet_30m[~np.isfinite(aet_30m)] = np.nan
+					aet_target = aggregate_frame(aet_30m, row_weights, column_weights)
+					aet_target[~target_mask] = np.nan
 					stamp = timestamp.strftime("%Y%m%d%H")
-					write_frame(out_30_dir / f"{OUTPUT_30M_PREFIX}_{ETF_RESOLUTION_LABEL}_{stamp}.tif", aet_30m, etf_transform, etf_crs)
-					out_30_var[output_index] = np.where(np.isfinite(aet_30m), aet_30m, NODATA)
-					count_30m += 1
-					aet_target = align_frame(
-						aet_30m, etf_transform, etf_crs,
-						(pet_target_height, pet_target_width), pet_target_transform,
-						pet_target_crs, Resampling.average,
-					)
-					write_frame(
-						out_target_dir / f"{OUTPUT_TARGET_PREFIX}_{TARGET_RESOLUTION_M}m_{stamp}.tif",
-						aet_target, pet_target_transform, pet_target_crs,
-					)
-					out_target_var[output_index] = np.where(np.isfinite(aet_target), aet_target, NODATA)
-					count_target += 1
-			finally:
-				out_30_nc.close()
-				out_target_nc.close()
-	return count_30m, count_target
+					out_target_dir = OUTPUT_TARGET_DIR / f"{timestamp.year}_{TARGET_RESOLUTION_M}m"
+					write_frame(out_target_dir / f"{OUTPUT_TARGET_PREFIX}_{TARGET_RESOLUTION_M}m_{stamp}.tif", aet_target, target_transform, target_crs)
+					hours = (timestamp - TIME_ORIGIN).total_seconds() / 3600
+					out_30_time[count] = hours
+					out_target_time[count] = hours
+					out_30_var[count] = np.where(np.isfinite(aet_30m), aet_30m, NODATA)
+					out_target_var[count] = np.where(np.isfinite(aet_target), aet_target, NODATA)
+					count += 1
+					previous_time = timestamp
+	return count, count
 
 
 # -----------------------------------------------------------------------
@@ -361,5 +403,5 @@ def calculate_hourly_aet() -> tuple[int, int]:
 
 if __name__ == "__main__":
 	written_30m, written_target = calculate_hourly_aet()
-	print(f"Wrote {written_30m} hourly 30 m AET frames to {OUTPUT_30M_DIR}")
-	print(f"Wrote {written_target} hourly {TARGET_RESOLUTION_M} m AET frames to {OUTPUT_TARGET_DIR}")
+	print(f"Done: {written_30m} hourly time steps written to {OUTPUT_30M_NETCDF.name}")
+	print(f"Done: {written_target} hourly {TARGET_RESOLUTION_M} m GeoTIFFs in {OUTPUT_TARGET_DIR.name} and NetCDF {OUTPUT_TARGET_NETCDF.name}")

@@ -20,12 +20,13 @@ from netcdf_to_geotiffs import (
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-VARIABLES = ["pre", "rch", "run", "tht", "twsc"]
+VARIABLES = ["wte"]
 INPUT_DATASETS: list[tuple[str, Path]] = [
-    ("run 2", SCRIPT_DIR / "OBF_hourly_grid_R2.nc"),
-    ("run 3", SCRIPT_DIR / "OBF_hourly_grid_R3.nc"),
+    ("run 1", SCRIPT_DIR / "OBF_hourly_grid_r1.nc"),
+    ("run 2", SCRIPT_DIR / "OBF_hourly_grid_r2.nc"),
+    ("run 3", SCRIPT_DIR / "OBF_hourly_grid_r3.nc")
 ]
-COMPARISON_PAIRS: list[tuple[str, str]] = [("run 2", "run 3")]
+COMPARISON_PAIRS: list[tuple[str, str]] = [("run 1", "run 2"), ("run 2", "run 3")]
 OUTPUT_DIRECTORY = SCRIPT_DIR / "run comparison"
 START_DATE: Optional[datetime] = None
 END_DATE: Optional[datetime] = None
@@ -213,7 +214,7 @@ def compare_pair(
     if shape_a != shape_b or transform_a != transform_b or crs_a != crs_b:
         raise ValueError(f"{label_a!r} and {label_b!r} are not on the same grid; resample before comparing.")
     output_directory.mkdir(parents=True, exist_ok=True)
-    pair_prefix = f"{slugify(variable)}_R2vsR3"
+    pair_prefix = f"{slugify(variable)}_{slugify(label_a)}vs{slugify(label_b)}"
     time_dimension_a = dataset_a.variables[TIME_VARIABLE].dimensions[0]
     time_dimension_b = dataset_b.variables[TIME_VARIABLE].dimensions[0]
 

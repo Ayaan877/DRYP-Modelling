@@ -6,22 +6,25 @@ import rasterio
 from netCDF4 import Dataset, num2date
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
-from rasterio.warp import Resampling, reproject
 from tqdm import tqdm
-from extract_watershed_rasters import make_watershed_mask, process_watershed_frame, read_watershed
 
 # -----------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SATELLITE_INPUT_DIR = SCRIPT_DIR / "Watershed AET hourly 250m"
-SATELLITE_PREFIX = "watershed_AET_hourly_250m"
+VERSION = "v2"
+SATELLITE_FILE = SCRIPT_DIR / f"Watershed AET hourly 250m {VERSION}" / f"watershed_AET_hourly_{VERSION}_250m_all_years.nc"
+SATELLITE_AET_VARIABLE = "aet_250m"
+SATELLITE_X_VARIABLE = "x_250m"
+SATELLITE_Y_VARIABLE = "y_250m"
+SATELLITE_CRS_VARIABLE = "crs_250m"
 RAINFED_INPUT_DIR = SCRIPT_DIR / "Watershed_rainfed_AET_hourly_250m"
 RAINFED_PREFIX = "rainfed_AET_hourly"
 
-OUTPUT_DIR = SCRIPT_DIR / "Watershed irrigation AET hourly 250m"
+OUTPUT_DIR = SCRIPT_DIR / f"Watershed irrigation AET hourly 250m {VERSION}"
 OUTPUT_PREFIX = "irrigation_AET_hourly_250m"
+COMBINED_NETCDF_FILE = OUTPUT_DIR / f"{OUTPUT_PREFIX}_all_years.nc"
 
 SOURCE_AET_VARIABLE = "aet"
 IRRIGATION_VARIABLE = "irr"
@@ -30,8 +33,7 @@ X_VARIABLE = "x"
 Y_VARIABLE = "y"
 CRS_VARIABLE = "crs"
 DEFAULT_CRS = "EPSG:32643"
-WATERSHED_FILE = SCRIPT_DIR / "Updated Watershed" / "Updated_watershed.shp"
-NODATA = -99999.0
+NODATA = -9999.0
 NETCDF_COMPRESSION_LEVEL = 4
 TIME_ORIGIN = datetime(2015, 1, 1)
 
@@ -40,27 +42,22 @@ TIME_ORIGIN = datetime(2015, 1, 1)
 # -----------------------------------------------------------------------
 
 
-def input_year_files() -> dict[int, tuple[Path, Path]]:
-	"""Pair yearly satellite and rainfed NetCDF inputs by year."""
-	satellite_files: dict[int, Path] = {}
-	for path in sorted(SATELLITE_INPUT_DIR.glob(f"{SATELLITE_PREFIX}_*.nc")):
+def input_year_files() -> dict[int, Path]:
+	"""Find yearly rainfed NetCDF inputs by year."""
+	if not SATELLITE_FILE.is_file():
+		raise FileNotFoundError(f"Satellite NetCDF was not found: {SATELLITE_FILE}")
+	rainfed_files: dict[int, Path] = {}
+	for path in sorted(RAINFED_INPUT_DIR.glob(f"{RAINFED_PREFIX}_*.nc")):
 		try:
 			year = int(path.stem.rsplit("_", 1)[1])
 		except (IndexError, ValueError) as error:
 			raise ValueError(f"Could not determine year from {path.name}") from error
-		if year in satellite_files:
-			raise ValueError(f"Duplicate satellite NetCDF for {year}: {path}")
-		satellite_files[year] = path
-	if not satellite_files:
-		raise FileNotFoundError(f"No satellite yearly NetCDFs found in {SATELLITE_INPUT_DIR}")
-
-	pairs: dict[int, tuple[Path, Path]] = {}
-	for year, satellite_path in sorted(satellite_files.items()):
-		rainfed_path = RAINFED_INPUT_DIR / f"{RAINFED_PREFIX}_{year}.nc"
-		if not rainfed_path.is_file():
-			raise FileNotFoundError(f"Rainfed NetCDF for {year} was not found: {rainfed_path}")
-		pairs[year] = satellite_path, rainfed_path
-	return pairs
+		if year in rainfed_files:
+			raise ValueError(f"Duplicate rainfed NetCDF for {year}: {path}")
+		rainfed_files[year] = path
+	if not rainfed_files:
+		raise FileNotFoundError(f"No rainfed yearly NetCDFs found in {RAINFED_INPUT_DIR}")
+	return rainfed_files
 
 
 def coordinate_spacing(values: np.ndarray, name: str) -> float:
@@ -75,18 +72,19 @@ def coordinate_spacing(values: np.ndarray, name: str) -> float:
 
 def source_metadata(
 	dataset: Dataset, path: Path,
+	aet_name: str, x_name: str, y_name: str, crs_name: str,
 ) -> tuple[Any, list[datetime], np.ndarray, np.ndarray, rasterio.Affine, CRS]:
-	for name in (SOURCE_AET_VARIABLE, TIME_VARIABLE, X_VARIABLE, Y_VARIABLE):
+	for name in (aet_name, TIME_VARIABLE, x_name, y_name):
 		if name not in dataset.variables:
 			raise ValueError(f"Configured variable {name!r} was not found in {path}")
 
-	aet_variable = dataset.variables[SOURCE_AET_VARIABLE]
+	aet_variable = dataset.variables[aet_name]
 	time_variable = dataset.variables[TIME_VARIABLE]
-	x_variable = dataset.variables[X_VARIABLE]
-	y_variable = dataset.variables[Y_VARIABLE]
-	if aet_variable.dimensions != (TIME_VARIABLE, Y_VARIABLE, X_VARIABLE):
-		raise ValueError(f"{SOURCE_AET_VARIABLE!r} must use dimensions (time, y, x) in {path}")
-	if x_variable.dimensions != (X_VARIABLE,) or y_variable.dimensions != (Y_VARIABLE,):
+	x_variable = dataset.variables[x_name]
+	y_variable = dataset.variables[y_name]
+	if aet_variable.dimensions != (TIME_VARIABLE, y_name, x_name):
+		raise ValueError(f"{aet_name!r} must use dimensions (time, y, x) in {path}")
+	if x_variable.dimensions != (x_name,) or y_variable.dimensions != (y_name,):
 		raise ValueError(f"X/Y coordinates must be one-dimensional in {path}")
 
 	x_values = np.asarray(x_variable[:], dtype=np.float64)
@@ -101,7 +99,7 @@ def source_metadata(
 		dx,
 		dy,
 	)
-	crs_variable = dataset.variables.get(CRS_VARIABLE)
+	crs_variable = dataset.variables.get(crs_name)
 	projection = (
 		getattr(crs_variable, "spatial_ref", None)
 		or getattr(crs_variable, "crs_wkt", None)
@@ -125,31 +123,19 @@ def source_metadata(
 	return aet_variable, timestamps, x_values, y_values, transform, crs
 
 
-def align_frame(
-	frame: np.ndarray,
-	source_transform: rasterio.Affine,
-	source_crs: CRS,
-	target_shape: tuple[int, int],
-	target_transform: rasterio.Affine,
-	target_crs: CRS,
-) -> np.ndarray:
-	"""Resample one satellite frame onto the rainfed grid."""
-	aligned = np.full(target_shape, np.nan, dtype=np.float32)
-	reproject(
-		frame,
-		aligned,
-		src_transform=source_transform,
-		src_crs=source_crs,
-		src_nodata=np.nan,
-		dst_transform=target_transform,
-		dst_crs=target_crs,
-		dst_nodata=np.nan,
-		resampling=Resampling.bilinear,
-	)
-	return aligned
+def validate_grids(
+	satellite_x: np.ndarray, satellite_y: np.ndarray,
+	rainfed_x: np.ndarray, rainfed_y: np.ndarray,
+) -> None:
+	"""Confirm the satellite and rainfed inputs share one grid (no resampling is applied)."""
+	if satellite_x.shape != rainfed_x.shape or satellite_y.shape != rainfed_y.shape:
+		raise ValueError("Satellite and rainfed grid shapes differ")
+	if not (np.allclose(satellite_x, rainfed_x, rtol=0, atol=0.5)
+		and np.allclose(satellite_y, rainfed_y, rtol=0, atol=0.5)):
+		raise ValueError("Satellite and rainfed grid coordinates differ")
 
 
-def create_year_netcdf(
+def create_combined_netcdf(
 	path: Path,
 	year_times: list[datetime],
 	transform: rasterio.Affine,
@@ -216,81 +202,87 @@ def write_geotiff(
 		)
 
 
+def year_timestamps(year: int) -> list[datetime]:
+	start = datetime(year, 1, 1)
+	next_year = datetime(year + 1, 1, 1)
+	return [
+		start + timedelta(hours=hour)
+		for hour in range(int((next_year - start).total_seconds() // 3600))
+	]
+
+
 def calculate_irrigation_aet_hourly() -> tuple[int, list[datetime]]:
 	"""Write satellite-minus-rainfed hourly AET, clamped to nonnegative values."""
 	total_written = 0
 	missing_timestamps: list[datetime] = []
-	geometries, watershed_crs = read_watershed(WATERSHED_FILE)
-	for year, (satellite_path, rainfed_path) in tqdm(
-		input_year_files().items(), desc="AET yearly files", unit="year"
-	):
-		with Dataset(satellite_path, "r") as satellite_dataset, Dataset(rainfed_path, "r") as rainfed_dataset:
-			satellite = source_metadata(satellite_dataset, satellite_path)
-			rainfed = source_metadata(rainfed_dataset, rainfed_path)
-			satellite_var = satellite[0]
-			rainfed_var = rainfed[0]
-			satellite_indices = {timestamp: index for index, timestamp in enumerate(satellite[1])}
-			rainfed_indices = {timestamp: index for index, timestamp in enumerate(rainfed[1])}
-			start = datetime(year, 1, 1)
-			next_year = datetime(year + 1, 1, 1)
-			timestamps = [
-				start + timedelta(hours=hour)
-				for hour in range(int((next_year - start).total_seconds() // 3600))
-			]
-			missing_timestamps.extend(
-				timestamp for timestamp in timestamps
-				if timestamp not in satellite_indices or timestamp not in rainfed_indices
-			)
-			x_values, y_values, transform, crs = rainfed[2:]
-			satellite_reverse_y = satellite[3][0] < satellite[3][-1]
-			rainfed_reverse_y = y_values[0] < y_values[-1]
-			units = str(getattr(satellite_var, "units", "mm/hr"))
-			rainfed_units = str(getattr(rainfed_var, "units", units))
-			if not (units == "mm/hr" and rainfed_units == "mm/dt"):
-				raise ValueError(f"Satellite and rainfed AET units do not match for {year}")
-			height, width = len(y_values), len(x_values)
-			inside_mask = make_watershed_mask(
-				(height, width), transform, crs, geometries, watershed_crs,
-			)
-			output_nc, output_irrigation = create_year_netcdf(
-				OUTPUT_DIR / f"{OUTPUT_PREFIX}_{year}.nc",
-				timestamps, transform, width, height, crs, units,
-			)
-			try:
-				for index in tqdm(
-					range(len(timestamps)), desc=f"AET {year}", unit="hour", leave=False
-				):
-					timestamp = timestamps[index]
-					if timestamp not in satellite_indices or timestamp not in rainfed_indices:
-						frame = np.zeros((height, width), dtype=np.float32)
-					else:
-						satellite_frame = np.ma.filled(
-							satellite_var[satellite_indices[timestamp], :, :], np.nan
-						).astype(np.float32)
-						if satellite_reverse_y:
-							satellite_frame = satellite_frame[::-1, :]
-						satellite_frame = align_frame(
-							satellite_frame, satellite[4], satellite[5],
-							(height, width), transform, crs,
-						)
-						rainfed_frame = np.ma.filled(
-							rainfed_var[rainfed_indices[timestamp], :, :], np.nan
-						).astype(np.float32)
-						if rainfed_reverse_y:
-							rainfed_frame = rainfed_frame[::-1, :]
-						valid = np.isfinite(satellite_frame) & np.isfinite(rainfed_frame)
-						frame = np.full(satellite_frame.shape, np.nan, dtype=np.float32)
-						frame[valid] = np.maximum(satellite_frame[valid] - rainfed_frame[valid], 0)
-					frame = process_watershed_frame(frame, inside_mask)
-					stamp = timestamp.strftime("%Y%m%d%H")
-					write_geotiff(
-						OUTPUT_DIR / f"{year}_250m" / f"{OUTPUT_PREFIX}_{stamp}.tif",
-						frame, transform, crs, units,
+	rainfed_files = input_year_files()
+	with Dataset(SATELLITE_FILE, "r") as satellite_dataset:
+		satellite = source_metadata(
+			satellite_dataset, SATELLITE_FILE,
+			SATELLITE_AET_VARIABLE, SATELLITE_X_VARIABLE, SATELLITE_Y_VARIABLE, SATELLITE_CRS_VARIABLE,
+		)
+		satellite_var = satellite[0]
+		satellite_indices = {timestamp: index for index, timestamp in enumerate(satellite[1])}
+		satellite_units = str(getattr(satellite_var, "units", ""))
+		if satellite_units != "mm/hr":
+			raise ValueError(f"Satellite AET units must be mm/hr, found {satellite_units!r}")
+
+		all_timestamps = [timestamp for year in rainfed_files for timestamp in year_timestamps(year)]
+		output_nc, output_irrigation = create_combined_netcdf(
+			COMBINED_NETCDF_FILE, all_timestamps,
+			satellite[4], len(satellite[2]), len(satellite[3]), satellite[5], satellite_units,
+		)
+		offset = 0
+		try:
+			for year, rainfed_path in tqdm(rainfed_files.items(), desc="AET yearly files", unit="year"):
+				with Dataset(rainfed_path, "r") as rainfed_dataset:
+					rainfed = source_metadata(
+						rainfed_dataset, rainfed_path,
+						SOURCE_AET_VARIABLE, X_VARIABLE, Y_VARIABLE, CRS_VARIABLE,
 					)
-					output_irrigation[index] = np.where(np.isfinite(frame), frame, NODATA)
-					total_written += 1
-			finally:
-				output_nc.close()
+					rainfed_var = rainfed[0]
+					rainfed_indices = {timestamp: index for index, timestamp in enumerate(rainfed[1])}
+					rainfed_units = str(getattr(rainfed_var, "units", ""))
+					# Rainfed data is hourly, so mm/dt values equal mm/hr.
+					if rainfed_units not in ("mm/hr", "mm/dt"):
+						raise ValueError(f"Rainfed AET units must be mm/hr or mm/dt, found {rainfed_units!r} for {year}")
+
+					x_values, y_values, transform, crs = rainfed[2:]
+					validate_grids(satellite[2], satellite[3], x_values, y_values)
+					rainfed_reverse_y = y_values[0] < y_values[-1]
+					height, width = len(y_values), len(x_values)
+
+					timestamps = year_timestamps(year)
+					missing_timestamps.extend(
+						timestamp for timestamp in timestamps
+						if timestamp not in satellite_indices or timestamp not in rainfed_indices
+					)
+					for index in tqdm(
+						range(len(timestamps)), desc=f"AET {year}", unit="hour", leave=False
+					):
+						timestamp = timestamps[index]
+						if timestamp not in satellite_indices or timestamp not in rainfed_indices:
+							frame = np.full((height, width), np.nan, dtype=np.float32)
+						else:
+							satellite_frame = np.ma.filled(
+								satellite_var[satellite_indices[timestamp], :, :], np.nan
+							).astype(np.float32)
+							rainfed_frame = np.ma.filled(
+								rainfed_var[rainfed_indices[timestamp], :, :], np.nan
+							).astype(np.float32)
+							if rainfed_reverse_y:
+								rainfed_frame = rainfed_frame[::-1, :]
+							frame = np.maximum(satellite_frame - rainfed_frame, 0).astype(np.float32)
+						stamp = timestamp.strftime("%Y%m%d%H")
+						write_geotiff(
+							OUTPUT_DIR / f"{year}_250m" / f"{OUTPUT_PREFIX}_{stamp}.tif",
+							frame, transform, crs, satellite_units,
+						)
+						output_irrigation[offset + index] = np.where(np.isfinite(frame), frame, NODATA)
+						total_written += 1
+					offset += len(timestamps)
+		finally:
+			output_nc.close()
 	return total_written, missing_timestamps
 
 
@@ -300,9 +292,9 @@ def calculate_irrigation_aet_hourly() -> tuple[int, list[datetime]]:
 
 if __name__ == "__main__":
 	written, missing_timestamps = calculate_irrigation_aet_hourly()
-	print(f"Wrote {written} hourly irrigation AET GeoTIFFs and yearly NetCDFs to {OUTPUT_DIR}")
+	print(f"Wrote {written} hourly irrigation AET GeoTIFFs and combined NetCDF to {OUTPUT_DIR}")
 	if missing_timestamps:
-		print("Timestamps without matching satellite/rainfed inputs (written as zero):")
+		print("Timestamps without matching satellite/rainfed inputs (written as NODATA):")
 		print(f"Number of missing timestamps: {len(missing_timestamps)}")
 	else:
 		print("No unmatched satellite/rainfed timestamps.")
