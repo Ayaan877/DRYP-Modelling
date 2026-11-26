@@ -17,7 +17,7 @@ import watershed_operations
 # gapfilling: temporal, spatiotemporal (ETf only)
 # version: v1, v2 (hourly and gapfilled datasets only)
 # Combine with + - * /, e.g. "AET ssebop daily 30m/refET era5 daily 10km"
-VARIABLES = ["Irr ssebop_era5 hourly 250m v2", "GW ssebop_era5 hourly 250m v2"]
+VARIABLES = ["ETf ssebop_era5 daily 30m temporal v1"]
 YEARS = list(range(2015, 2025))
 N_COLUMNS = 3
 SAVE_PLOT = True
@@ -29,7 +29,7 @@ EXCLUDE_ALWAYS_NODATA_PIXELS = True
 # True: dates absent from the file count as nodata in every pixel's series
 MISSING_DATES_COUNT_AS_NODATA = True
 
-BIN_WIDTH = 1  # days
+BIN_COUNT = 40  # target number of bins across the full gap-length range
 SUBPLOT_SIZE = (6, 3)  # width, height of each panel
 COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
@@ -96,34 +96,30 @@ def pixel_gaps(cube, listed):
 	return np.concatenate(gap_lengths), pixels.shape[1]
 
 
-def plot_year(ax, year):
+def collect_year(year):
 	results = []
 	for variable in VARIABLES:
 		cube, listed, cadence_days, hourly = load_validity_cube(variable, year)
 		gaps, n_pixels = pixel_gaps(cube, listed)
 		results.append((variable, gaps, n_pixels, cadence_days, hourly))
-	use_hours = any(hourly for _, _, _, _, hourly in results)
-	results = [
+	return results
+
+
+def to_common_units(results, use_hours):
+	return [
 		(variable, gaps * (1 if hourly else cadence_days * (24 if use_hours else 1)), n_pixels)
 		for variable, gaps, n_pixels, cadence_days, hourly in results
 	]
-	max_gap = max((int(gaps.max()) for _, gaps, _ in results if gaps.size), default=0)
-	if max_gap:
-		bin_width = BIN_WIDTH * (24 if use_hours else 1)
-		bins = np.arange(0.5, max_gap + bin_width + 0.5, bin_width)
-		for index, (variable, gaps, n_pixels) in enumerate(results):
-			if gaps.size and n_pixels:
-				weights = np.full(gaps.shape, 1 / n_pixels)
-				ax.hist(gaps, bins=bins, weights=weights, color=COLORS[index % len(COLORS)], alpha=0.45, label=variable)
-	unit = "hours" if use_hours else "days"
+
+
+def plot_year(ax, year, results, bins, unit):
+	for index, (variable, gaps, n_pixels) in enumerate(results):
+		if gaps.size and n_pixels:
+			ax.hist(gaps, bins=bins, color=COLORS[index % len(COLORS)], label=variable)
 	ax.set_xlabel(f"Gap length (consecutive nodata {unit})")
-	ax.set_ylabel("Average number of gaps per pixel")
-	counts = ", ".join(
-		f"{name}: {pixels} px, {len(gaps)} gaps ({len(gaps) / pixels:.2f} gaps/px)" if pixels
-		else f"{name}: 0 px, {len(gaps)} gaps"
-		for name, gaps, pixels in results
-	)
-	ax.set_title(f"{year}: {counts}")
+	ax.set_ylabel("Number of gaps")
+	pixel_counts = " / ".join(str(pixels) for _, _, pixels in results)
+	ax.set_title(f"{year}: {pixel_counts} px")
 
 
 def plot_years(years):
@@ -135,16 +131,28 @@ def plot_years(years):
 		squeeze=False,
 	)
 	flat_axes = axes.ravel()
+	all_results = {year: collect_year(year) for year in years}
+	use_hours = any(hourly for results in all_results.values() for *_, hourly in results)
+	all_results = {year: to_common_units(results, use_hours) for year, results in all_results.items()}
+	max_gap = max(
+		(int(gaps.max()) for results in all_results.values() for _, gaps, _ in results if gaps.size),
+		default=0,
+	)
+	step = 24 if use_hours else 1
+	bin_width = step * max(1, -(-max_gap // (BIN_COUNT * step)))
+	bins = np.arange(0.5, max_gap + bin_width + 0.5, bin_width)
+	unit = "hours" if use_hours else "days"
 	for ax, year in zip(flat_axes, years):
-		plot_year(ax, year)
+		plot_year(ax, year, all_results[year], bins, unit)
 	for ax in flat_axes[len(years):]:
 		ax.set_visible(False)
 	handles = [
-		Patch(facecolor=COLORS[index % len(COLORS)], alpha=0.45, label=variable)
+		Patch(facecolor=COLORS[index % len(COLORS)], label=variable)
 		for index, variable in enumerate(VARIABLES)
 	]
+	fig.suptitle("Nodata gap length distribution: " + ", ".join(VARIABLES))
 	fig.legend(handles=handles, loc="lower center", ncol=min(4, len(handles)), frameon=False)
-	fig.tight_layout(rect=(0, 0.08, 1, 1))
+	fig.tight_layout(rect=(0, 0.08, 1, 0.95))
 	if SAVE_PLOT:
 		fig.savefig(Path(__file__).with_suffix(".png"), dpi=300, bbox_inches="tight")
 		plt.close(fig)

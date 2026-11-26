@@ -215,7 +215,7 @@ def load_geotiffs(path, config, year):
 
 ROOT = Path(__file__).resolve().parent
 
-# Names: <data> <source> <timescale> <resolution> [temporal|spatiotemporal] [version]; sources use "_" since "-" is an operator
+# Names: <data> <source> <timescale> <resolution> [temporal|spatiotemporal|redistributed] [version]; sources use "_" since "-" is an operator
 DATASETS = {
 	"AET bhuvan daily 750m": DatasetInput("netcdf", "Watershed AET Bhuvan 750m", "watershed_bhuvan_AET_750m_{year}.nc", "aet", "mm/day", 1, "750m", source_crs="EPSG:32643"),
 	"AET bhuvan daily 5500m": DatasetInput("netcdf", "Watershed AET Bhuvan 5500m", "watershed_bhuvan_AET_5500m_{year}.nc", "aet", "mm/day", 1, "5500m", source_crs="EPSG:32643"),
@@ -230,6 +230,7 @@ DATASETS = {
 	"Irr ssebop_era5 hourly 250m v2": DatasetInput("combined_netcdf", "Watershed irrigation AET hourly 250m v2", "irrigation_AET_hourly_250m_all_years.nc", "irr", "mm/hr", 1, "250m", x_variable="x", y_variable="y"),
 	"GW ssebop_era5 hourly 250m v1": DatasetInput("hourly_netcdf", "Watershed gw abstraction hourly 250m", "gw_abstraction_hourly_250m_{year}.nc", "gw_abs", "m3/hr", 1, "250m", x_variable="x", y_variable="y"),
 	"GW ssebop_era5 hourly 250m v2": DatasetInput("combined_netcdf", "Watershed gw abstraction hourly 250m v2", "gw_abstraction_hourly_250m_all_years.nc", "gw_abs", "m3/hr", 1, "250m", x_variable="x", y_variable="y"),
+	"GW ssebop_era5 hourly 250m redistributed v2": DatasetInput("combined_netcdf", "Watershed gw abstraction hourly 250m v2", "gw_abstraction_hourly_250m_redistributed_all_years.nc", "gw_abs", "m3/hr", 1, "250m", x_variable="x", y_variable="y"),
 	"PET converted hourly native": DatasetInput("hourly_netcdf", "PET_hourly_converted", "{year}_hourly_converted_pet_Badenhalli_subwatershed.nc", "pet", "mm/hr", 1, "native", x_variable="longitude", y_variable="latitude", source_crs="EPSG:4326"),
 	"refET agera5 daily 10km": DatasetInput("netcdf", "Watershed ref ET agERA5 10km", "watershed_agERA5_refET_10km_{year}.nc", "refET", "mm/day", 1, "10km", source_crs="EPSG:32643"),
 	"refET era5 daily 10km": DatasetInput("netcdf", "Watershed ref ET ERA5 Land 10km", "watershed_ERA5Land_refET_10km_{year}.nc", "refET", "mm/day", 1, "10km", source_crs="EPSG:32643"),

@@ -14,7 +14,7 @@ import watershed_data
 # -----------------------------------------------------------------------
 
 DATASET_VERSION = "v2"
-DATASET = f"ETf ssebop_era5 daily 30m spatiotemporal {DATASET_VERSION}"
+DATASET = f"ETf ssebop_era5 daily 30m temporal {DATASET_VERSION}"
 START_DATE = dt.date(2015, 1, 1)
 END_DATE = dt.date(2025, 12, 31)
 

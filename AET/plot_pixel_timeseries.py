@@ -16,20 +16,21 @@ import watershed_operations
 # source: bhuvan, ssebop, ssebop_era5, rainfed, bhuvan_era5, converted, agera5, era5
 # timescale: hourly, daily, dekadal
 # resolution: 30m, 250m, 750m, 1000m, 5500m, 10km, native
-# gapfilling: temporal, spatiotemporal (ETf only)
+# gapfilling: temporal, spatiotemporal (ETf only), redistributed (GW only)
 # version: v1, v2 (hourly and gapfilled datasets only)
 # Combine with + - * /, e.g. "AET ssebop daily 30m/refET era5 daily 10km"
 # Select one variable to show pixel traces.
-VARIABLES = ["AET rainfed hourly 250m v1", "AET ssebop_era5 hourly 250m v2"]
-YEARS = list(range(2015, 2025))
+VARIABLES = ["GW ssebop_era5 hourly 250m redistributed v2"]
+YEARS = list(range(2015, 2026))
 N_COLUMNS = 3
-SAVE_PLOT = True
+SAVE_PLOT = False
 SHOW_PIXEL_SERIES = False
 
 PIXEL_ALPHA = 0.1
 PIXEL_LINEWIDTH = 0.35
 MAX_PIXEL_SERIES = 5000
 MEAN_LINEWIDTH = 2
+MEAN_LINE_STYLE = "-"  # e.g. "o", "o-", "--", "-o", ":"
 SD_ALPHA = 0.5
 SINGLE_MEAN_COLOR = "crimson"  # single dataset: contrasts with the pixel traces
 SINGLE_SD_COLOR = "gold"
@@ -44,6 +45,24 @@ def load_series(variable, year):
 	"""Return dates and a (time, row, column) cube for a dataset or expression."""
 	series = watershed_operations.resolve_request(variable, year)
 	return series.dates, series.values, series.units
+
+
+def parse_line_style(style):
+	"""Split a format string such as "o-" into (linestyle, marker)."""
+	linestyle = "None"
+	for candidate in ("--", "-.", ":", "-"):
+		if candidate in style:
+			linestyle = candidate
+			style = style.replace(candidate, "", 1)
+			break
+	return linestyle, style or "None"
+
+
+def series_colors(color, show_pixels):
+	"""Return (mean, sd) colours; pixel mode uses contrasting colours."""
+	if show_pixels:
+		return SINGLE_MEAN_COLOR, SINGLE_SD_COLOR
+	return color, color
 
 
 def draw_variable(ax, variable, year, color, show_pixels):
@@ -76,10 +95,10 @@ def draw_variable(ax, variable, year, color, show_pixels):
 	if multiple_pixels.any():
 		std[multiple_pixels] = np.nanstd(series[has_data][multiple_pixels], axis=1, ddof=1)
 	xs = x[has_data]
-	mean_color = SINGLE_MEAN_COLOR if show_pixels else color
-	sd_color = SINGLE_SD_COLOR if show_pixels else color
+	mean_color, sd_color = series_colors(color, show_pixels)
 	ax.fill_between(xs, mean - std, mean + std, color=sd_color, alpha=SD_ALPHA, zorder=2)
-	ax.plot(xs, mean, color=mean_color, linewidth=MEAN_LINEWIDTH, zorder=3)
+	linestyle, marker = parse_line_style(MEAN_LINE_STYLE)
+	ax.plot(xs, mean, color=mean_color, linewidth=MEAN_LINEWIDTH, linestyle=linestyle, marker=marker, zorder=3)
 	return series.shape[1], units
 
 
@@ -107,6 +126,7 @@ def plot_years(years):
 		n_rows, n_cols,
 		figsize=(SUBPLOT_SIZE[0] * n_cols, SUBPLOT_SIZE[1] * n_rows),
 		squeeze=False,
+		sharey=True,
 	)
 	flat_axes = axes.ravel()
 	for ax, year in zip(flat_axes, years):
@@ -114,17 +134,29 @@ def plot_years(years):
 	for ax in flat_axes[len(years):]:
 		ax.set_visible(False)
 	single = len(VARIABLES) == 1
+	show_pixels = SHOW_PIXEL_SERIES and single
 	handles = []
+	linestyle, marker = parse_line_style(MEAN_LINE_STYLE)
 	for index, variable in enumerate(VARIABLES):
-		color = COLORS[index % len(COLORS)]
+		mean_color, sd_color = series_colors(COLORS[index % len(COLORS)], show_pixels)
+		mean_label = "Mean" if single else variable
+		sd_label = "±1 SD" if single else f"{variable} ±1 SD"
 		handles.extend([
-			Line2D([0], [0], color=SINGLE_MEAN_COLOR if single else color, linewidth=MEAN_LINEWIDTH, label=f"{variable} mean"),
-			Patch(facecolor=SINGLE_SD_COLOR if single else color, alpha=SD_ALPHA, label=f"{variable} ±1 SD"),
+			Line2D([0], [0], color=mean_color, linewidth=MEAN_LINEWIDTH, linestyle=linestyle, marker=marker, label=mean_label),
+			Patch(facecolor=sd_color, alpha=SD_ALPHA, label=sd_label),
 		])
-	if single and SHOW_PIXEL_SERIES:
+	if show_pixels:
 		handles.append(Line2D([0], [0], color=COLORS[0], alpha=PIXEL_ALPHA, label="Pixel series (sample)"))
-	fig.legend(handles=handles, loc="lower center", ncol=min(4, len(handles)), frameon=False)
-	fig.tight_layout(rect=(0, 0.08, 1, 1))
+	title = fig.suptitle(f"{', '.join(VARIABLES)}", fontsize=12, va="top", y=0.995)
+	title_bottom = title.get_window_extent().transformed(fig.transFigure.inverted()).y0
+	legend = fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, title_bottom - 0.005), ncol=1, frameon=False)
+	inverse = fig.transFigure.inverted()
+	legend_bottom = legend.get_window_extent().transformed(inverse).y0
+	top = legend_bottom - 0.01
+	fig.tight_layout(rect=(0, 0, 1, top))
+	# tight_layout leaves a gap above the axes titles; a second pass corrects it
+	gap = top - flat_axes[0].title.get_window_extent().transformed(inverse).y1
+	fig.tight_layout(rect=(0, 0, 1, top + gap))
 	if SAVE_PLOT:
 		fig.savefig(Path(__file__).with_suffix(".png"), dpi=300, bbox_inches="tight")
 		plt.close(fig)
