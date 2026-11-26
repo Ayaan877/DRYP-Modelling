@@ -20,7 +20,7 @@ import watershed_operations
 # version: v1, v2 (hourly and gapfilled datasets only)
 # Combine with + - * /, e.g. "AET ssebop daily 30m/refET era5 daily 10km"
 # Select one variable to show pixel traces.
-VARIABLES = ["GW ssebop_era5 hourly 250m redistributed v2"]
+VARIABLES = ["Irr ssebop_era5 hourly 250m v2"]
 YEARS = list(range(2015, 2026))
 N_COLUMNS = 3
 SAVE_PLOT = False
